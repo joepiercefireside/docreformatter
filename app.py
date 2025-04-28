@@ -61,7 +61,7 @@ def call_ai_api(content):
                        "- Product Monograph: Official prescribing information or usage guidelines.\n"
                        "- Real-World Experiences: Patient or clinician experiences (if present, else empty).\n"
                        "- Enclosures: Supporting documents or posters.\n"
-                       "Return a JSON object with these keys and their corresponding text from the input. Assign tables to relevant sections (e.g., Clinical Trial Results). Preserve references separately."
+                       "Return a JSON object with these keys and their corresponding text from the input. Assign tables to relevant sections (e.g., Clinical Trial Results). Preserve references separately. Ensure the response is valid JSON."
         },
         {
             "role": "user",
@@ -76,7 +76,7 @@ def call_ai_api(content):
     payload = {
         "model": "gpt-3.5-turbo",
         "messages": messages,
-        "max_tokens": 1000,
+        "max_tokens": 2000,
         "temperature": 0.7
     }
     
@@ -84,14 +84,31 @@ def call_ai_api(content):
         response = requests.post(AI_API_URL, headers=headers, json=payload)
         response.raise_for_status()
         data = response.json()
-        return json.loads(data["choices"][0]["message"]["content"])
+        
+        raw_content = data["choices"][0]["message"]["content"]
+        print(f"Raw AI response: {raw_content[:1000]}...")
+        
+        try:
+            parsed_content = json.loads(raw_content)
+            if not isinstance(parsed_content, dict):
+                raise ValueError("AI response is not a JSON object")
+            return parsed_content
+        except json.JSONDecodeError as e:
+            print(f"JSON validation error: {str(e)}")
+            return {
+                "error": f"Invalid JSON from AI: {str(e)}",
+                "summary": "Unable to categorize due to AI response error",
+                "background": content["text"][:500],
+                "monograph": "",
+                "real_world": "",
+                "enclosures": "",
+                "tables": {"Unknown": content["tables"][0] if content["tables"] else []},
+                "references": content["references"]
+            }
     except requests.exceptions.HTTPError as e:
         error_response = response.json() if response else {"error": str(e)}
         print(f"API Error: {response.status_code} - {error_response}")
         return {"error": f"HTTP Error: {str(e)} - {error_response}"}
-    except json.JSONDecodeError as e:
-        print(f"JSON Decode Error: {str(e)}")
-        return {"error": f"Invalid JSON response: {str(e)}"}
     except Exception as e:
         print(f"Unexpected Error: {str(e)}")
         return {"error": str(e)}
