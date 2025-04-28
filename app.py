@@ -40,7 +40,7 @@ def extract_content_from_docx(file_path):
             for row in table.rows:
                 row_data = [cell.text.strip() for cell in row.cells]
                 table_data.append(row_data)
-            if table_data:
+            if table_data and any(row_data):  # Only add non-empty tables
                 content["tables"].append(table_data)
         
         return content
@@ -103,7 +103,7 @@ def call_ai_api(content):
             return {
                 "error": f"Invalid JSON from AI: {str(e)}",
                 "summary": "Unable to categorize due to AI response error",
-                "background": content["text"][:500],
+                "background": content["text"][:500] if content["text"] else "",
                 "monograph": "",
                 "real_world": "",
                 "enclosures": "",
@@ -147,8 +147,8 @@ def add_styled_text(doc, text, bullet=False):
 def add_styled_table(doc, table_data, section_name):
     """Add a table with 10pt Calibri text and borders."""
     try:
-        if not table_data or not table_data[0]:
-            print(f"Skipping empty table for section: {section_name}")
+        if not table_data or not table_data[0] or not any(cell for row in table_data for cell in row):
+            print(f"Skipping invalid or empty table for section: {section_name}")
             return None
         table = doc.add_table(rows=len(table_data), cols=len(table_data[0]))
         table.alignment = WD_TABLE_ALIGNMENT.CENTER
@@ -272,6 +272,9 @@ def upload_file():
         create_reformatted_docx(sections, output_path)
         
         return send_file(output_path, as_attachment=True, download_name=f"reformatted_{filename}")
+    except IndexError as e:
+        print(f"IndexError in upload: {str(e)}")
+        return f"Internal Server Error: list index out of range - {str(e)}", 500
     except Exception as e:
         print(f"Upload error: {str(e)}")
         return f"Internal Server Error: {str(e)}", 500
