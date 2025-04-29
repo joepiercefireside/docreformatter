@@ -1,4 +1,4 @@
-from flask import Flask, request, send_file, render_template
+from flask import Flask, request, send_file, render_template, jsonify
 from docx import Document
 from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -18,6 +18,41 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 # Get AI API config from environment variables
 AI_API_URL = os.environ.get('AI_API_URL', 'https://api.openai.com/v1/chat/completions')
 API_KEY = os.environ.get('API_KEY', 'your-api-key')
+
+# Path to store AI prompt
+PROMPT_FILE = os.path.join(app.config['UPLOAD_FOLDER'], 'ai_prompt.json')
+
+# Default AI system prompt
+DEFAULT_AI_PROMPT = """You are a medical document analyst. Categorize the provided document content into sections matching this output format:
+- Summary: Brief overview of the drug and key points.
+- Background Information: Disease context and background.
+- Product Monograph: Official prescribing information or usage guidelines.
+- Real-World Experiences: Patient or clinician experiences (if present, else empty).
+- Enclosures: Supporting documents or posters.
+Return a JSON object with these keys and their corresponding text from the input. Assign tables to relevant sections (e.g., Clinical Trial Results). Preserve references separately. Ensure the response is valid JSON. For tables, return a dictionary where keys are section names and values are lists of rows, each row being a list of cell values."""
+
+def load_ai_prompt():
+    """Load the AI prompt from file or return the default."""
+    try:
+        if os.path.exists(PROMPT_FILE):
+            with open(PROMPT_FILE, 'r') as f:
+                data = json.load(f)
+                return data.get('prompt', DEFAULT_AI_PROMPT)
+        return DEFAULT_AI_PROMPT
+    except Exception as e:
+        print(f"Error loading AI prompt: {str(e)}")
+        return DEFAULT_AI_PROMPT
+
+def save_ai_prompt(prompt):
+    """Save the AI prompt to file."""
+    try:
+        os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+        with open(PROMPT_FILE, 'w') as f:
+            json.dump({'prompt': prompt}, f)
+        print(f"Saved AI prompt: {prompt[:100]}...")
+    except Exception as e:
+        print(f"Error saving AI prompt: {str(e)}")
+        raise
 
 def extract_content_from_docx(file_path):
     """Extract text, tables, and references from a .docx file."""
@@ -61,16 +96,13 @@ def call_ai_api(content):
     text = "\n".join(content["text"])
     tables = json.dumps(content["tables"])
     
+    # Load the current AI prompt
+    ai_prompt = load_ai_prompt()
+    
     messages = [
         {
             "role": "system",
-            "content": "You are a medical document analyst. Categorize the provided document content into sections matching this output format: "
-                       "- Summary: Brief overview of the drug and key points.\n"
-                       "- Background Information: Disease context and background.\n"
-                       "- Product Monograph: Official prescribing information or usage guidelines.\n"
-                       "- Real-World Experiences: Patient or clinician experiences (if present, else empty).\n"
-                       "- Enclosures: Supporting documents or posters.\n"
-                       "Return a JSON object with these keys and their corresponding text from the input. Assign tables to relevant sections (e.g., Clinical Trial Results). Preserve references separately. Ensure the response is valid JSON. For tables, return a dictionary where keys are section names and values are lists of rows, each row being a list of cell values."
+            "content": ai_prompt
         },
         {
             "role": "user",
@@ -276,8 +308,23 @@ def create_reformatted_docx(sections, output_path, drug_name="KRESLADI"):
 
 @app.route('/')
 def index():
-    """Render the upload form."""
-    return render_template('index.html')
+    """Render the upload form with the current AI prompt."""
+    ai_prompt = load_ai_prompt()
+    return render_template('index.html', ai_prompt=ai_prompt)
+
+@app.route('/update_prompt', methods=['POST'])
+def update_prompt():
+    """Update the AI system prompt."""
+    try:
+        data = request.form
+        new_prompt = data.get('prompt', '').strip()
+        if not new_prompt:
+            return jsonify({'error': 'Prompt cannot be empty'}), 400
+        save_ai_prompt(new_prompt)
+        return jsonify({'message': 'Prompt updated successfully'}), 200
+    except Exception as e:
+        print(f"Error updating prompt: {str(e)}")
+        return jsonify({'error': f'Failed to update prompt: {str(e)}'}), 500
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
