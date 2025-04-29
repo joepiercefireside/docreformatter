@@ -19,17 +19,19 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 AI_API_URL = os.environ.get('AI_API_URL', 'https://api.openai.com/v1/chat/completions')
 API_KEY = os.environ.get('API_KEY', 'your-api-key')
 
-# Path to store AI prompt
+# Paths for AI prompt and output template
 PROMPT_FILE = os.path.join(app.config['UPLOAD_FOLDER'], 'ai_prompt.json')
+TEMPLATE_FILE = os.path.join(app.config['UPLOAD_FOLDER'], 'output_template.docx')
 
-# Default AI system prompt
-DEFAULT_AI_PROMPT = """You are a medical document analyst. Categorize the provided document content into sections matching this output format:
-- Summary: Brief overview of the drug and key points.
-- Background Information: Disease context and background.
-- Product Monograph: Official prescribing information or usage guidelines.
-- Real-World Experiences: Patient or clinician experiences (if present, else empty).
-- Enclosures: Supporting documents or posters.
-Return a JSON object with these keys and their corresponding text from the input. Assign tables to relevant sections (e.g., Clinical Trial Results). Preserve references separately. Ensure the response is valid JSON. For tables, return a dictionary where keys are section names and values are lists of rows, each row being a list of cell values."""
+# Default AI system prompt (focused on content interpretation)
+DEFAULT_AI_PROMPT = """You are a medical document analyst. Analyze the provided document content and categorize it into the following sections based on the input text and tables:
+- Summary: A concise overview of the drug, its purpose, and key findings.
+- Background: Context about the disease or condition the drug treats.
+- Monograph: Official prescribing information, usage guidelines, or clinical details.
+- Real-World Experiences: Patient or clinician experiences, if present (else empty).
+- Enclosures: Descriptions of supporting documents, posters, or additional materials.
+- Tables: Assign tables to appropriate sections (e.g., 'Patient Demographics', 'Adverse Events') based on their content.
+Return a JSON object with these keys and the corresponding content extracted or rewritten from the input. Preserve references separately. Ensure the response is valid JSON. For tables, return a dictionary where keys are descriptive section names and values are lists of rows, each row being a list of cell values. Focus on accurately interpreting and summarizing the source material, avoiding any formatting instructions."""
 
 def load_ai_prompt():
     """Load the AI prompt from file or return the default."""
@@ -52,6 +54,16 @@ def save_ai_prompt(prompt):
         print(f"Saved AI prompt: {prompt[:100]}...")
     except Exception as e:
         print(f"Error saving AI prompt: {str(e)}")
+        raise
+
+def save_template(file):
+    """Save the uploaded template .docx file."""
+    try:
+        os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+        file.save(TEMPLATE_FILE)
+        print(f"Saved template: {TEMPLATE_FILE}")
+    except Exception as e:
+        print(f"Error saving template: {str(e)}")
         raise
 
 def extract_content_from_docx(file_path):
@@ -169,7 +181,7 @@ def call_ai_api(content):
         return {"error": str(e)}
 
 def add_styled_heading(doc, text, level=1):
-    """Add a bold, underlined heading in 14pt Arial."""
+    """Add a bold, underlined heading in 14pt Arial (for fallback formatting)."""
     try:
         para = doc.add_paragraph()
         run = para.add_run(text)
@@ -183,7 +195,7 @@ def add_styled_heading(doc, text, level=1):
         raise
 
 def add_styled_text(doc, text, bullet=False):
-    """Add text in 12pt Calibri, optionally as a bullet."""
+    """Add text in 12pt Calibri, optionally as a bullet (for fallback formatting)."""
     try:
         para = doc.add_paragraph(style="List Bullet" if bullet else None)
         run = para.add_run(text)
@@ -195,7 +207,7 @@ def add_styled_text(doc, text, bullet=False):
         raise
 
 def add_styled_table(doc, table_data, section_name):
-    """Add a table with 10pt Calibri text and borders."""
+    """Add a table with 10pt Calibri text and borders (for fallback formatting)."""
     try:
         if not table_data or not table_data[0] or not any(cell for row in table_data for cell in row):
             print(f"Skipping invalid or empty table for section: {section_name}")
@@ -244,12 +256,8 @@ def add_styled_table(doc, table_data, section_name):
         raise
 
 def create_reformatted_docx(sections, output_path, drug_name="KRESLADI"):
-    """Create a new .docx matching the output format."""
+    """Create a new .docx using the uploaded template or fallback formatting."""
     try:
-        doc = Document()
-        
-        add_styled_heading(doc, f"{drug_name} (marnetegragene autotemcel)", level=1)
-        
         # Ensure required keys exist
         default_sections = {
             "summary": "No summary provided",
@@ -261,45 +269,136 @@ def create_reformatted_docx(sections, output_path, drug_name="KRESLADI"):
             "references": []
         }
         sections = {**default_sections, **sections}
-        
-        add_styled_heading(doc, "Summary", level=1)
-        for line in sections["summary"].split("\n"):
-            if line.strip():
-                add_styled_text(doc, line, bullet=True)
-        
-        add_styled_heading(doc, "Background Information on Leukocyte Adhesion Deficiency (LAD-I)", level=1)
-        for line in sections["background"].split("\n"):
-            if line.strip():
-                add_styled_text(doc, line)
-        
-        add_styled_heading(doc, "Product Monograph", level=1)
-        for line in sections["monograph"].split("\n"):
-            if line.strip():
-                add_styled_text(doc, line, bullet=True)
-        
-        if sections["real_world"].strip():
-            add_styled_heading(doc, "Real-World Experiences with KRESLADI", level=1)
-            for line in sections["real_world"].split("\n"):
+
+        # Try to load the template, fall back to default formatting
+        if os.path.exists(TEMPLATE_FILE):
+            print(f"Using template: {TEMPLATE_FILE}")
+            doc = Document(TEMPLATE_FILE)
+            
+            # Function to replace placeholder text in the template
+            def replace_placeholder(paragraph, placeholder, content, preserve_style=True):
+                if placeholder.lower() in paragraph.text.lower():
+                    if preserve_style:
+                        # Clear existing text but keep style
+                        paragraph.text = ""
+                        run = paragraph.add_run(content)
+                        # Copy style from first run (if any)
+                        if paragraph.runs:
+                            first_run = paragraph.runs[0]
+                            run.bold = first_run.bold
+                            run.underline = first_run.underline
+                            run.font.name = first_run.font.name
+                            run.font.size = first_run.font.size
+                    else:
+                        paragraph.text = content
+
+            # Function to add table after a placeholder
+            def add_table_after_placeholder(doc, placeholder, table_data, section_name):
+                for i, para in enumerate(doc.paragraphs):
+                    if placeholder.lower() in para.text.lower():
+                        print(f"Adding table for {section_name} after placeholder: {placeholder}")
+                        max_cols = max(len(row) for row in table_data)
+                        table_data = [row + [""] * (max_cols - len(row)) for row in table_data]
+                        table = doc.add_table(rows=len(table_data), cols=max_cols, after=para._element)
+                        table.alignment = WD_TABLE_ALIGNMENT.CENTER
+                        table.autofit = True
+                        for row_idx, row_data in enumerate(table_data):
+                            row = table.rows[row_idx]
+                            for col_idx, cell_text in enumerate(row_data):
+                                cell = row.cells[col_idx]
+                                cell.text = cell_text or ""
+                                cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+                                for p in cell.paragraphs:
+                                    for r in p.runs:
+                                        r.font.name = para.runs[0].font.name if para.runs else "Calibri"
+                                        r.font.size = para.runs[0].font.size if para.runs else Pt(10)
+                        # Copy border style from template tables (if any)
+                        if doc.tables:
+                            for row in table.rows:
+                                for cell in row.cells:
+                                    tcPr = cell._tc.get_or_add_tcPr()
+                                    tcBorders = tcPr.first_child_found_in("w:tcBorders")
+                                    if not tcBorders:
+                                        tcBorders = OxmlElement('w:tcBorders')
+                                        tcPr.append(tcBorders)
+                                        for border_name in ['top', 'left', 'bottom', 'right']:
+                                            border = OxmlElement(f'w:{border_name}')
+                                            border.set(qn('w:val'), 'single')
+                                            border.set(qn('w:sz'), '4')
+                                            border.set(qn('w:space'), '0')
+                                            border.set(qn('w:color'), 'auto')
+                                            tcBorders.append(border)
+                        return True
+                return False
+
+            # Replace placeholders or append content
+            for para in doc.paragraphs:
+                if "drug name" in para.text.lower():
+                    replace_placeholder(para, "drug name", f"{drug_name} (marnetegragene autotemcel)")
+                elif "summary" in para.text.lower():
+                    replace_placeholder(para, "summary", sections["summary"])
+                elif "background" in para.text.lower():
+                    replace_placeholder(para, "background", sections["background"])
+                elif "monograph" in para.text.lower():
+                    replace_placeholder(para, "monograph", sections["monograph"])
+                elif "real-world experiences" in para.text.lower() and sections["real_world"].strip():
+                    replace_placeholder(para, "real-world experiences", sections["real_world"])
+                elif "enclosures" in para.text.lower():
+                    replace_placeholder(para, "enclosures", sections["enclosures"])
+                elif "references" in para.text.lower():
+                    replace_placeholder(para, "references", "\n".join([f"{i}. {ref}" for i, ref in enumerate(sections["references"], 1)]))
+
+            # Add tables after their respective placeholders
+            for section_name, table_data in sections["tables"].items():
+                if not add_table_after_placeholder(doc, section_name, table_data, section_name):
+                    print(f"No placeholder found for table: {section_name}, appending at end")
+                    para = doc.add_paragraph(section_name)
+                    add_styled_table(doc, table_data, section_name)
+        else:
+            # Fallback to original formatting
+            print("No template found, using default formatting")
+            doc = Document()
+            
+            add_styled_heading(doc, f"{drug_name} (marnetegragene autotemcel)", level=1)
+            
+            add_styled_heading(doc, "Summary", level=1)
+            for line in sections["summary"].split("\n"):
+                if line.strip():
+                    add_styled_text(doc, line, bullet=True)
+            
+            add_styled_heading(doc, "Background Information on Leukocyte Adhesion Deficiency (LAD-I)", level=1)
+            for line in sections["background"].split("\n"):
                 if line.strip():
                     add_styled_text(doc, line)
-        
-        print(f"Processing tables: {sections['tables']}")
-        for section_name, table_data in sections["tables"].items():
-            add_styled_heading(doc, section_name, level=2)
-            add_styled_table(doc, table_data, section_name)
-        
-        add_styled_heading(doc, "Figures", level=1)
-        add_styled_text(doc, "Insert Figure 1: Study Administration and Treatment here")
-        add_styled_text(doc, "Insert Figure 2: Incidence of Infection-related Hospitalizations here")
-        
-        add_styled_heading(doc, "Enclosures", level=1)
-        for line in sections["enclosures"].split("\n"):
-            if line.strip():
-                add_styled_text(doc, line, bullet=True)
-        
-        add_styled_heading(doc, "References", level=1)
-        for i, ref in enumerate(sections["references"], 1):
-            add_styled_text(doc, f"{i}. {ref}", bullet=False)
+            
+            add_styled_heading(doc, "Product Monograph", level=1)
+            for line in sections["monograph"].split("\n"):
+                if line.strip():
+                    add_styled_text(doc, line, bullet=True)
+            
+            if sections["real_world"].strip():
+                add_styled_heading(doc, "Real-World Experiences with KRESLADI", level=1)
+                for line in sections["real_world"].split("\n"):
+                    if line.strip():
+                        add_styled_text(doc, line)
+            
+            print(f"Processing tables: {sections['tables']}")
+            for section_name, table_data in sections["tables"].items():
+                add_styled_heading(doc, section_name, level=2)
+                add_styled_table(doc, table_data, section_name)
+            
+            add_styled_heading(doc, "Figures", level=1)
+            add_styled_text(doc, "Insert Figure 1: Study Administration and Treatment here")
+            add_styled_text(doc, "Insert Figure 2: Incidence of Infection-related Hospitalizations here")
+            
+            add_styled_heading(doc, "Enclosures", level=1)
+            for line in sections["enclosures"].split("\n"):
+                if line.strip():
+                    add_styled_text(doc, line, bullet=True)
+            
+            add_styled_heading(doc, "References", level=1)
+            for i, ref in enumerate(sections["references"], 1):
+                add_styled_text(doc, f"{i}. {ref}", bullet=False)
         
         doc.save(output_path)
     except Exception as e:
@@ -325,6 +424,24 @@ def update_prompt():
     except Exception as e:
         print(f"Error updating prompt: {str(e)}")
         return jsonify({'error': f'Failed to update prompt: {str(e)}'}), 500
+
+@app.route('/upload_template', methods=['POST'])
+def upload_template():
+    """Handle template .docx upload."""
+    try:
+        if 'template' not in request.files:
+            return jsonify({'error': 'No template file uploaded'}), 400
+        file = request.files['template']
+        if file.filename == '':
+            return jsonify({'error': 'No template file selected'}), 400
+        if not file.filename.endswith('.docx'):
+            return jsonify({'error': 'Only .docx files are supported'}), 400
+        
+        save_template(file)
+        return jsonify({'message': 'Template uploaded successfully'}), 200
+    except Exception as e:
+        print(f"Error uploading template: {str(e)}")
+        return jsonify({'error': f'Failed to upload template: {str(e)}'}), 500
 
 @app.route('/upload', methods=['POST'])
 def upload_file():

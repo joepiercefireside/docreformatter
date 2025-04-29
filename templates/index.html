@@ -16,7 +16,7 @@
         .card {
             margin-bottom: 20px;
         }
-        #promptFeedback {
+        #promptFeedback, #templateFeedback {
             display: none;
         }
     </style>
@@ -53,10 +53,26 @@
                 <div id="promptFeedback" class="alert mt-3"></div>
             </div>
         </div>
+        
+        <!-- Template Upload Section -->
+        <div class="card">
+            <div class="card-body">
+                <h5 class="card-title">Upload Output Template</h5>
+                <form id="templateForm" enctype="multipart/form-data">
+                    <div class="mb-3">
+                        <label for="template" class="form-label">Select a .docx template:</label>
+                        <input type="file" class="form-control" id="template" name="template" accept=".docx" required>
+                    </div>
+                    <button type="submit" class="btn btn-success">Upload Template</button>
+                </form>
+                <div id="templateFeedback" class="alert mt-3"></div>
+            </div>
+        </div>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <script>
+        // Handle prompt form submission
         document.getElementById('promptForm').addEventListener('submit', async function(e) {
             e.preventDefault();
             const prompt = document.getElementById('prompt').value;
@@ -84,6 +100,37 @@
                 feedback.style.display = 'block';
                 feedback.className = 'alert alert-danger mt-3';
                 feedback.textContent = 'Error updating prompt';
+                setTimeout(() => { feedback.style.display = 'none'; }, 3000);
+            }
+        });
+
+        // Handle template form submission
+        document.getElementById('templateForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const formData = new FormData(this);
+            const feedback = document.getElementById('templateFeedback');
+            
+            try {
+                const response = await fetch('/upload_template', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+                
+                feedback.style.display = 'block';
+                if (response.ok) {
+                    feedback.className = 'alert alert-success mt-3';
+                    feedback.textContent = data.message;
+                } else {
+                    feedback.className = 'alert alert-danger mt-3';
+                    feedback.textContent = data.error;
+                }
+                
+                setTimeout(() => { feedback.style.display = 'none'; }, 3000);
+            } catch (error) {
+                feedback.style.display = 'block';
+                feedback.className = 'alert alert-danger mt-3';
+                feedback.textContent = 'Error uploading template';
                 setTimeout(() => { feedback.style.display = 'none'; }, 3000);
             }
         });
