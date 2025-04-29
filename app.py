@@ -110,7 +110,7 @@ def call_ai_api(content):
                 "monograph": "",
                 "real_world": "",
                 "enclosures": "",
-                "tables": {},  # Empty tables to avoid IndexError
+                "tables": {},
                 "references": content["references"]
             }
     except requests.exceptions.HTTPError as e:
@@ -157,12 +157,14 @@ def add_styled_table(doc, table_data, section_name):
         max_cols = max(len(row) for row in table_data)
         table_data = [row + [""] * (max_cols - len(row)) for row in table_data]
         print(f"Adding table for {section_name}: {table_data}")
+        
         table = doc.add_table(rows=len(table_data), cols=max_cols)
         table.alignment = WD_TABLE_ALIGNMENT.CENTER
         table.autofit = True
         
         for i, row_data in enumerate(table_data):
             row = table.rows[i]
+            print(f"Processing row {i}: {row_data}")
             for j, cell_text in enumerate(row_data):
                 cell = row.cells[j]
                 cell.text = cell_text or ""
@@ -172,12 +174,13 @@ def add_styled_table(doc, table_data, section_name):
                         run.font.name = "Calibri"
                         run.font.size = Pt(10)
         
+        # Simplified border styling to avoid XML errors
         for row in table.rows:
             for cell in row.cells:
-                cell._element.xpath(".//w:tcBorders")[0].clear()
-                cell._element.xpath(".//w:tcBorders")[0].append(
-                    cell._element.getparent().makeelement("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}top")
-                )
+                print(f"Setting borders for cell in row {row.cells.index(cell)}")
+                # Use python-docx API for borders instead of XML
+                cell._tc.get_or_add_tcPr().get_or_add_tcBorders()
+        
         return table
     except IndexError as e:
         print(f"IndexError in add_styled_table for {section_name}: {str(e)}")
@@ -226,6 +229,7 @@ def create_reformatted_docx(sections, output_path, drug_name="KRESLADI"):
                 if line.strip():
                     add_styled_text(doc, line)
         
+        print(f"Processing tables: {sections['tables']}")
         for section_name, table_data in sections["tables"].items():
             add_styled_heading(doc, section_name, level=2)
             add_styled_table(doc, table_data, section_name)
