@@ -38,9 +38,11 @@ def extract_content_from_docx(file_path):
         for table in doc.tables:
             table_data = []
             for row in table.rows:
-                row_data = [cell.text.strip() for cell in row.cells]
-                table_data.append(row_data)
-            if table_data and any(row_data):  # Only add non-empty tables
+                row_data = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+                if row_data:  # Only add non-empty rows
+                    table_data.append(row_data)
+            if table_data:  # Only add non-empty tables
+                print(f"Extracted table: {table_data}")
                 content["tables"].append(table_data)
         
         return content
@@ -97,6 +99,7 @@ def call_ai_api(content):
             parsed_content = json.loads(raw_content)
             if not isinstance(parsed_content, dict):
                 raise ValueError("AI response is not a JSON object")
+            print(f"Parsed AI response: {parsed_content}")
             return parsed_content
         except json.JSONDecodeError as e:
             print(f"JSON validation error: {str(e)}")
@@ -107,7 +110,7 @@ def call_ai_api(content):
                 "monograph": "",
                 "real_world": "",
                 "enclosures": "",
-                "tables": {"Unknown": content["tables"][0] if content["tables"] else []},
+                "tables": {},  # Empty tables to avoid IndexError
                 "references": content["references"]
             }
     except requests.exceptions.HTTPError as e:
@@ -150,7 +153,11 @@ def add_styled_table(doc, table_data, section_name):
         if not table_data or not table_data[0] or not any(cell for row in table_data for cell in row):
             print(f"Skipping invalid or empty table for section: {section_name}")
             return None
-        table = doc.add_table(rows=len(table_data), cols=len(table_data[0]))
+        # Ensure all rows have the same number of columns
+        max_cols = max(len(row) for row in table_data)
+        table_data = [row + [""] * (max_cols - len(row)) for row in table_data]
+        print(f"Adding table for {section_name}: {table_data}")
+        table = doc.add_table(rows=len(table_data), cols=max_cols)
         table.alignment = WD_TABLE_ALIGNMENT.CENTER
         table.autofit = True
         
@@ -172,6 +179,9 @@ def add_styled_table(doc, table_data, section_name):
                     cell._element.getparent().makeelement("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}top")
                 )
         return table
+    except IndexError as e:
+        print(f"IndexError in add_styled_table for {section_name}: {str(e)}")
+        raise
     except Exception as e:
         print(f"Error adding styled table for {section_name}: {str(e)}")
         raise
