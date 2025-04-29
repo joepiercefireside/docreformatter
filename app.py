@@ -1,8 +1,10 @@
 from flask import Flask, request, send_file, render_template
 from docx import Document
-from docx.shared import Pt, RGBColor
+from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_TABLE_ALIGNMENT, WD_CELL_VERTICAL_ALIGNMENT
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 import requests
 import json
 import re
@@ -187,11 +189,22 @@ def add_styled_table(doc, table_data, section_name):
                         run.font.name = "Calibri"
                         run.font.size = Pt(10)
         
-        # Simplified border styling
+        # Add borders to table cells
         for i, row in enumerate(table.rows):
             for j, cell in enumerate(row.cells):
                 print(f"Setting borders for cell at row {i}, col {j}")
-                cell._tc.get_or_add_tcPr().get_or_add_tcBorders()
+                tcPr = cell._tc.get_or_add_tcPr()
+                tcBorders = tcPr.first_child_found_in("w:tcBorders")
+                if not tcBorders:
+                    tcBorders = OxmlElement('w:tcBorders')
+                    tcPr.append(tcBorders)
+                for border_name in ['top', 'left', 'bottom', 'right']:
+                    border = OxmlElement(f'w:{border_name}')
+                    border.set(qn('w:val'), 'single')
+                    border.set(qn('w:sz'), '4')  # 4/8 pt
+                    border.set(qn('w:space'), '0')
+                    border.set(qn('w:color'), 'auto')
+                    tcBorders.append(border)
         
         return table
     except Exception as e:
