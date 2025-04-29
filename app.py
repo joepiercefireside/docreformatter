@@ -68,14 +68,14 @@ def call_ai_api(content):
                        "- Product Monograph: Official prescribing information or usage guidelines.\n"
                        "- Real-World Experiences: Patient or clinician experiences (if present, else empty).\n"
                        "- Enclosures: Supporting documents or posters.\n"
-                       "Return a JSON object with these keys and their corresponding text from the input. Assign tables to relevant sections (e.g., Clinical Trial Results). Preserve references separately. Ensure the response is valid JSON."
+                       "Return a JSON object with these keys and their corresponding text from the input. Assign tables to relevant sections (e.g., Clinical Trial Results). Preserve references separately. Ensure the response is valid JSON. For tables, return a dictionary where keys are section names and values are lists of rows, each row being a list of cell values."
         },
         {
             "role": "user",
             "content": f"Input Text:\n{text}\n\nTables:\n{tables}\n\nOutput format:\n"
                        "{\"summary\": \"...\", \"background\": \"...\", \"monograph\": \"...\", "
                        "\"real_world\": \"\", \"enclosures\": \"...\", "
-                       "\"tables\": {\"section_name\": [[row1], [row2], ...]}, "
+                       "\"tables\": {\"section_name\": [[\"cell1\", \"cell2\"], [\"cell3\", \"cell4\"]]}, "
                        "\"references\": [\"ref1\", \"ref2\", ...]}"
         }
     ]
@@ -99,6 +99,19 @@ def call_ai_api(content):
             parsed_content = json.loads(raw_content)
             if not isinstance(parsed_content, dict):
                 raise ValueError("AI response is not a JSON object")
+            
+            # Validate and flatten tables to remove extra nesting
+            if "tables" in parsed_content and isinstance(parsed_content["tables"], dict):
+                for section_name, table_data in parsed_content["tables"].items():
+                    # If table_data is overly nested, flatten it
+                    while isinstance(table_data, list) and len(table_data) == 1 and isinstance(table_data[0], list):
+                        table_data = table_data[0]
+                    parsed_content["tables"][section_name] = table_data
+                    # Ensure table_data is a list of lists (rows)
+                    if not all(isinstance(row, list) for row in table_data):
+                        print(f"Invalid table data for {section_name}: {table_data}")
+                        parsed_content["tables"][section_name] = []
+            
             print(f"Parsed AI response: {parsed_content}")
             return parsed_content
         except json.JSONDecodeError as e:
@@ -174,17 +187,13 @@ def add_styled_table(doc, table_data, section_name):
                         run.font.name = "Calibri"
                         run.font.size = Pt(10)
         
-        # Simplified border styling to avoid XML errors
-        for row in table.rows:
-            for cell in row.cells:
-                print(f"Setting borders for cell in row {row.cells.index(cell)}")
-                # Use python-docx API for borders instead of XML
+        # Simplified border styling
+        for i, row in enumerate(table.rows):
+            for j, cell in enumerate(row.cells):
+                print(f"Setting borders for cell at row {i}, col {j}")
                 cell._tc.get_or_add_tcPr().get_or_add_tcBorders()
         
         return table
-    except IndexError as e:
-        print(f"IndexError in add_styled_table for {section_name}: {str(e)}")
-        raise
     except Exception as e:
         print(f"Error adding styled table for {section_name}: {str(e)}")
         raise
@@ -286,9 +295,6 @@ def upload_file():
         create_reformatted_docx(sections, output_path)
         
         return send_file(output_path, as_attachment=True, download_name=f"reformatted_{filename}")
-    except IndexError as e:
-        print(f"IndexError in upload: {str(e)}")
-        return f"Internal Server Error: list index out of range - {str(e)}", 500
     except Exception as e:
         print(f"Upload error: {str(e)}")
         return f"Internal Server Error: {str(e)}", 500
