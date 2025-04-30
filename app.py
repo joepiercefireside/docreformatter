@@ -16,10 +16,9 @@ from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = '/tmp'
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 auth = HTTPBasicAuth()
 
-# Authentication setup
 AUTH_PASSWORD = os.environ.get('AUTH_PASSWORD', 'default-password')
 users = {"admin": AUTH_PASSWORD}
 
@@ -27,32 +26,40 @@ users = {"admin": AUTH_PASSWORD}
 def verify_password(username, password):
     return users.get(username) == password
 
-# Database setup
 DATABASE_URL = os.environ.get('DATABASE_URL')
 def get_db_connection():
     conn = psycopg2.connect(DATABASE_URL, sslmode='require')
     return conn
 
 def init_db():
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS settings (
-            id SERIAL PRIMARY KEY,
-            prompt JSONB,
-            template BYTEA,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-    """)
-    conn.commit()
-    cur.close()
-    conn.close()
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                id SERIAL PRIMARY KEY,
+                client_id VARCHAR(50),
+                prompt JSONB,
+                template BYTEA,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_client_id ON settings(client_id);
+        """)
+        conn.commit()
+        cur.close()
+        conn.close()
+        print("Initialized database schema")
+    except Exception as e:
+        print(f"Error initializing database: {str(e)}")
+        raise
 
-# AI API configuration
+# Initialize database on app startup
+with app.app_context():
+    init_db()
+
 AI_API_URL = os.environ.get('AI_API_URL', 'https://api.openai.com/v1/chat/completions')
 API_KEY = os.environ.get('API_KEY', 'your-api-key')
 
-# Default AI system prompt
 DEFAULT_AI_PROMPT = """You are a medical document analyst. Analyze the provided document content and categorize it into the following sections based on the input text and tables:
 - Summary: A concise overview of the drug, its purpose, and key findings.
 - Background: Context about the disease or condition the drug treats.
@@ -62,12 +69,14 @@ DEFAULT_AI_PROMPT = """You are a medical document analyst. Analyze the provided 
 - Tables: Assign tables to appropriate sections (e.g., 'Patient Demographics', 'Adverse Events') based on their content.
 Return a JSON object with these keys and the corresponding content extracted or rewritten from the input. Preserve references separately. Ensure the response is valid JSON. For tables, return a dictionary where keys are descriptive section names and values are lists of rows, each row being a list of cell values. Focus on accurately interpreting and summarizing the source material, avoiding any formatting instructions."""
 
-def load_ai_prompt():
-    """Load the AI prompt from database or return the default."""
+def load_ai_prompt(client_id=None):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("SELECT prompt FROM settings WHERE prompt IS NOT NULL ORDER BY created_at DESC LIMIT 1")
+        if client_id:
+            cur.execute("SELECT prompt FROM settings WHERE client_id = %s AND prompt IS NOT NULL ORDER BY created_at DESC LIMIT 1", (client_id,))
+        else:
+            cur.execute("SELECT prompt FROM settings WHERE prompt IS NOT NULL ORDER BY created_at DESC LIMIT 1")
         result = cur.fetchone()
         cur.close()
         conn.close()
@@ -76,41 +85,41 @@ def load_ai_prompt():
         print(f"Error loading AI prompt: {str(e)}")
         return DEFAULT_AI_PROMPT
 
-def save_ai_prompt(prompt):
-    """Save the AI prompt to database."""
+def save_ai_prompt(prompt, client_id=None):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("INSERT INTO settings (prompt) VALUES (%s)", (Json({'prompt': prompt}),))
+        cur.execute("INSERT INTO settings (client_id, prompt) VALUES (%s, %s)", (client_id, Json({'prompt': prompt})))
         conn.commit()
         cur.close()
         conn.close()
-        print(f"Saved AI prompt: {prompt[:100]}...")
+        print(f"Saved AI prompt for client {client_id}: {prompt[:100]}...")
     except Exception as e:
         print(f"Error saving AI prompt: {str(e)}")
         raise
 
-def save_template(file):
-    """Save the uploaded template .docx file to database."""
+def save_template(file, client_id=None):
     try:
         file_data = file.read()
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("INSERT INTO settings (template) VALUES (%s)", (file_data,))
+        cur.execute("INSERT INTO settings (client_id, template) VALUES (%s, %s)", (client_id, file_data))
         conn.commit()
         cur.close()
         conn.close()
-        print("Saved template to database")
+        print(f"Saved template for client {client_id}")
     except Exception as e:
         print(f"Error saving template: {str(e)}")
         raise
 
-def load_template(output_path):
-    """Load the template .docx from database to a temporary file."""
+def load_template(output_path, client_id=None):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("SELECT template FROM settings WHERE template IS NOT NULL ORDER BY created_at DESC LIMIT 1")
+        if client_id:
+            cur.execute("SELECT template FROM settings WHERE client_id = %s AND template IS NOT NULL ORDER BY created_at DESC LIMIT 1", (client_id,))
+        else:
+            cur.execute("SELECT template FROM settings WHERE template IS NOT NULL ORDER BY created_at DESC LIMIT 1")
         result = cur.fetchone()
         cur.close()
         conn.close()
@@ -123,8 +132,20 @@ def load_template(output_path):
         print(f"Error loading template: {str(e)}")
         return False
 
+def get_clients():
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT DISTINCT client_id FROM settings WHERE client_id IS NOT NULL")
+        clients = [row[0] for row in cur.fetchall()]
+        cur.close()
+        conn.close()
+        return clients
+    except Exception as e:
+        print(f"Error getting clients: {str(e)}")
+        return []
+
 def extract_content_from_docx(file_path):
-    """Extract text, tables, and references from a .docx file."""
     try:
         doc = Document(file_path)
         content = {"text": [], "tables": [], "references": []}
@@ -156,8 +177,7 @@ def extract_content_from_docx(file_path):
         print(f"Error extracting content from docx: {str(e)}")
         raise
 
-def call_ai_api(content):
-    """Send content to AI to categorize into output sections."""
+def call_ai_api(content, client_id=None):
     headers = {
         "Authorization": f"Bearer {API_KEY}",
         "Content-Type": "application/json"
@@ -165,7 +185,7 @@ def call_ai_api(content):
     text = "\n".join(content["text"])
     tables = json.dumps(content["tables"])
     
-    ai_prompt = load_ai_prompt()
+    ai_prompt = load_ai_prompt(client_id)
     
     messages = [
         {
@@ -234,7 +254,6 @@ def call_ai_api(content):
         return {"error": str(e)}
 
 def add_styled_heading(doc, text, level=1):
-    """Add a bold, underlined heading in 14pt Arial (for fallback formatting)."""
     try:
         para = doc.add_paragraph()
         run = para.add_run(text)
@@ -248,7 +267,6 @@ def add_styled_heading(doc, text, level=1):
         raise
 
 def add_styled_text(doc, text, bullet=False):
-    """Add text in 12pt Calibri, optionally as a bullet (for fallback formatting)."""
     try:
         para = doc.add_paragraph(style="List Bullet" if bullet else None)
         run = para.add_run(text)
@@ -260,7 +278,6 @@ def add_styled_text(doc, text, bullet=False):
         raise
 
 def add_styled_table(doc, table_data, section_name):
-    """Add a table with 10pt Calibri text and borders (for fallback formatting)."""
     try:
         if not table_data or not table_data[0] or not any(cell for row in table_data for cell in row):
             print(f"Skipping invalid or empty table for section: {section_name}")
@@ -306,8 +323,7 @@ def add_styled_table(doc, table_data, section_name):
         print(f"Error adding styled table for {section_name}: {str(e)}")
         raise
 
-def create_reformatted_docx(sections, output_path, drug_name="KRESLADI"):
-    """Create a new .docx using the stored template or fallback formatting."""
+def create_reformatted_docx(sections, output_path, drug_name="KRESLADI", client_id=None):
     try:
         default_sections = {
             "summary": "No summary provided",
@@ -321,8 +337,8 @@ def create_reformatted_docx(sections, output_path, drug_name="KRESLADI"):
         sections = {**default_sections, **sections}
 
         template_path = os.path.join(app.config['UPLOAD_FOLDER'], 'temp_template.docx')
-        if load_template(template_path):
-            print(f"Using template: {template_path}")
+        if load_template(template_path, client_id):
+            print(f"Using template for client {client_id}: {template_path}")
             doc = Document(template_path)
             
             def replace_placeholder(paragraph, placeholder, content, preserve_style=True):
@@ -398,7 +414,7 @@ def create_reformatted_docx(sections, output_path, drug_name="KRESLADI"):
                     para = doc.add_paragraph(section_name)
                     add_styled_table(doc, table_data, section_name)
         else:
-            print("No template found, using default formatting")
+            print(f"No template found for client {client_id}, using default formatting")
             doc = Document()
             
             add_styled_heading(doc, f"{drug_name} (marnetegragene autotemcel)", level=1)
@@ -450,20 +466,35 @@ def create_reformatted_docx(sections, output_path, drug_name="KRESLADI"):
 @app.route('/')
 @auth.login_required
 def index():
-    """Render the upload form with the current AI prompt."""
     ai_prompt = load_ai_prompt()
-    return render_template('index.html', ai_prompt=ai_prompt)
+    clients = get_clients()
+    return render_template('index.html', ai_prompt=ai_prompt, clients=clients)
+
+@app.route('/load_client', methods=['POST'])
+@auth.login_required
+def load_client():
+    try:
+        data = request.form
+        client_id = data.get('client_id')
+        if not client_id:
+            return jsonify({'error': 'Client ID cannot be empty'}), 400
+        prompt = load_ai_prompt(client_id)
+        return jsonify({'prompt': prompt}), 200
+    except Exception as e:
+        print(f"Error loading client: {str(e)}")
+        return jsonify({'error': 'Failed to load client'}), 500
 
 @app.route('/update_prompt', methods=['POST'])
 @auth.login_required
 def update_prompt():
-    """Update the AI system prompt."""
     try:
         data = request.form
+        print(f"Form data: {dict(data)}")
         new_prompt = data.get('prompt', '').strip()
+        client_id = data.get('client_id')
         if not new_prompt:
             return jsonify({'error': 'Prompt cannot be empty'}), 400
-        save_ai_prompt(new_prompt)
+        save_ai_prompt(new_prompt, client_id)
         return jsonify({'message': 'Prompt updated successfully'}), 200
     except Exception as e:
         print(f"Error updating prompt: {str(e)}")
@@ -472,7 +503,6 @@ def update_prompt():
 @app.route('/upload_template', methods=['POST'])
 @auth.login_required
 def upload_template():
-    """Handle template .docx upload."""
     try:
         if 'template' not in request.files:
             return jsonify({'error': 'No template file uploaded'}), 400
@@ -481,8 +511,8 @@ def upload_template():
             return jsonify({'error': 'No template file selected'}), 400
         if not file.filename.endswith('.docx'):
             return jsonify({'error': 'Only .docx files are supported'}), 400
-        
-        save_template(file)
+        client_id = request.form.get('client_id')
+        save_template(file, client_id)
         return jsonify({'message': 'Template uploaded successfully'}), 200
     except Exception as e:
         print(f"Error uploading template: {str(e)}")
@@ -491,7 +521,6 @@ def upload_template():
 @app.route('/upload', methods=['POST'])
 @auth.login_required
 def upload_file():
-    """Handle file upload and return reformatted .docx."""
     input_path = None
     output_path = None
     try:
@@ -502,20 +531,21 @@ def upload_file():
             return "No file selected", 400
         if not file.filename.endswith('.docx'):
             return "Only .docx files are supported", 400
+        client_id = request.form.get('client_id')
         
         filename = secure_filename(file.filename)
         input_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(input_path)
         
         content = extract_content_from_docx(input_path)
-        sections = call_ai_api(content)
+        sections = call_ai_api(content, client_id)
         if "error" in sections:
             print(f"AI processing failed: {sections['error']}")
             return f"AI API error: {sections['error']}", 500
         
         sections["references"] = content["references"]
         output_path = os.path.join(app.config['UPLOAD_FOLDER'], f"reformatted_{filename}")
-        create_reformatted_docx(sections, output_path)
+        create_reformatted_docx(sections, output_path, client_id=client_id)
         
         return send_file(output_path, as_attachment=True, download_name=f"reformatted_{filename}")
     except Exception as e:
@@ -534,7 +564,6 @@ def upload_file():
                 print(f"Error removing output file: {str(e)}")
 
 if __name__ == '__main__':
-    init_db()
     os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
