@@ -10,6 +10,8 @@ import requests
 import json
 import re
 import os
+import psycopg2
+from psycopg2.extras import Json
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
@@ -25,13 +27,30 @@ users = {"admin": AUTH_PASSWORD}
 def verify_password(username, password):
     return users.get(username) == password
 
-# Get AI API config from environment variables
+# Database setup
+DATABASE_URL = os.environ.get('DATABASE_URL')
+def get_db_connection():
+    conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+    return conn
+
+def init_db():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS settings (
+            id SERIAL PRIMARY KEY,
+            prompt JSONB,
+            template BYTEA,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+    conn.commit()
+    cur.close()
+    conn.close()
+
+# AI API configuration
 AI_API_URL = os.environ.get('AI_API_URL', 'https://api.openai.com/v1/chat/completions')
 API_KEY = os.environ.get('API_KEY', 'your-api-key')
-
-# Paths for AI prompt and output template
-PROMPT_FILE = os.path.join(app.config['UPLOAD_FOLDER'], 'ai_prompt.json')
-TEMPLATE_FILE = os.path.join(app.config['UPLOAD_FOLDER'], 'output_template.docx')
 
 # Default AI system prompt
 DEFAULT_AI_PROMPT = """You are a medical document analyst. Analyze the provided document content and categorize it into the following sections based on the input text and tables:
@@ -44,37 +63,65 @@ DEFAULT_AI_PROMPT = """You are a medical document analyst. Analyze the provided 
 Return a JSON object with these keys and the corresponding content extracted or rewritten from the input. Preserve references separately. Ensure the response is valid JSON. For tables, return a dictionary where keys are descriptive section names and values are lists of rows, each row being a list of cell values. Focus on accurately interpreting and summarizing the source material, avoiding any formatting instructions."""
 
 def load_ai_prompt():
-    """Load the AI prompt from file or return the default."""
+    """Load the AI prompt from database or return the default."""
     try:
-        if os.path.exists(PROMPT_FILE):
-            with open(PROMPT_FILE, 'r') as f:
-                data = json.load(f)
-                return data.get('prompt', DEFAULT_AI_PROMPT)
-        return DEFAULT_AI_PROMPT
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT prompt FROM settings WHERE prompt IS NOT NULL ORDER BY created_at DESC LIMIT 1")
+        result = cur.fetchone()
+        cur.close()
+        conn.close()
+        return result[0]['prompt'] if result and result[0] else DEFAULT_AI_PROMPT
     except Exception as e:
         print(f"Error loading AI prompt: {str(e)}")
         return DEFAULT_AI_PROMPT
 
 def save_ai_prompt(prompt):
-    """Save the AI prompt to file."""
+    """Save the AI prompt to database."""
     try:
-        os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-        with open(PROMPT_FILE, 'w') as f:
-            json.dump({'prompt': prompt}, f)
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("INSERT INTO settings (prompt) VALUES (%s)", (Json({'prompt': prompt}),))
+        conn.commit()
+        cur.close()
+        conn.close()
         print(f"Saved AI prompt: {prompt[:100]}...")
     except Exception as e:
         print(f"Error saving AI prompt: {str(e)}")
         raise
 
 def save_template(file):
-    """Save the uploaded template .docx file."""
+    """Save the uploaded template .docx file to database."""
     try:
-        os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-        file.save(TEMPLATE_FILE)
-        print(f"Saved template: {TEMPLATE_FILE}")
+        file_data = file.read()
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("INSERT INTO settings (template) VALUES (%s)", (file_data,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        print("Saved template to database")
     except Exception as e:
         print(f"Error saving template: {str(e)}")
         raise
+
+def load_template(output_path):
+    """Load the template .docx from database to a temporary file."""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT template FROM settings WHERE template IS NOT NULL ORDER BY created_at DESC LIMIT 1")
+        result = cur.fetchone()
+        cur.close()
+        conn.close()
+        if result and result[0]:
+            with open(output_path, 'wb') as f:
+                f.write(result[0])
+            return True
+        return False
+    except Exception as e:
+        print(f"Error loading template: {str(e)}")
+        return False
 
 def extract_content_from_docx(file_path):
     """Extract text, tables, and references from a .docx file."""
@@ -98,9 +145,9 @@ def extract_content_from_docx(file_path):
             table_data = []
             for row in table.rows:
                 row_data = [cell.text.strip() for cell in row.cells if cell.text.strip()]
-                if row_data:  # Only add non-empty rows
+                if row_data:
                     table_data.append(row_data)
-            if table_data:  # Only add non-empty tables
+            if table_data:
                 print(f"Extracted table: {table_data}")
                 content["tables"].append(table_data)
         
@@ -260,7 +307,7 @@ def add_styled_table(doc, table_data, section_name):
         raise
 
 def create_reformatted_docx(sections, output_path, drug_name="KRESLADI"):
-    """Create a new .docx using the uploaded template or fallback formatting."""
+    """Create a new .docx using the stored template or fallback formatting."""
     try:
         default_sections = {
             "summary": "No summary provided",
@@ -273,9 +320,10 @@ def create_reformatted_docx(sections, output_path, drug_name="KRESLADI"):
         }
         sections = {**default_sections, **sections}
 
-        if os.path.exists(TEMPLATE_FILE):
-            print(f"Using template: {TEMPLATE_FILE}")
-            doc = Document(TEMPLATE_FILE)
+        template_path = os.path.join(app.config['UPLOAD_FOLDER'], 'temp_template.docx')
+        if load_template(template_path):
+            print(f"Using template: {template_path}")
+            doc = Document(template_path)
             
             def replace_placeholder(paragraph, placeholder, content, preserve_style=True):
                 if placeholder.lower() in paragraph.text.lower():
@@ -486,6 +534,7 @@ def upload_file():
                 print(f"Error removing output file: {str(e)}")
 
 if __name__ == '__main__':
+    init_db()
     os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
