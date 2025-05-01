@@ -60,6 +60,7 @@ def init_db():
                 user_id INTEGER REFERENCES users(id),
                 client_id VARCHAR(50),
                 prompt JSONB,
+                prompt_name VARCHAR(255),
                 template BYTEA,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
@@ -196,8 +197,13 @@ def create_client():
     if request.method == 'POST':
         try:
             client_id = request.form.get('client_id').strip()
+            prompt_name = request.form.get('prompt_name', 'Default Prompt').strip()
+            prompt_content = request.form.get('prompt_content', DEFAULT_AI_PROMPT).strip()
             if not client_id:
                 flash('Client ID cannot be empty')
+                return redirect(url_for('create_client'))
+            if not prompt_name:
+                flash('Prompt name cannot be empty')
                 return redirect(url_for('create_client'))
             conn = get_db_connection()
             cur = conn.cursor()
@@ -207,8 +213,10 @@ def create_client():
                 cur.close()
                 conn.close()
                 return redirect(url_for('create_client'))
-            cur.execute("INSERT INTO settings (user_id, client_id, prompt) VALUES (%s, %s, %s)", 
-                       (current_user.id, client_id, Json({'prompt': DEFAULT_AI_PROMPT})))
+            cur.execute(
+                "INSERT INTO settings (user_id, client_id, prompt, prompt_name) VALUES (%s, %s, %s, %s)",
+                (current_user.id, client_id, Json({'prompt': prompt_content}), prompt_name)
+            )
             conn.commit()
             cur.close()
             conn.close()
@@ -219,6 +227,28 @@ def create_client():
             flash('Failed to create client')
             return redirect(url_for('create_client'))
     return render_template('create_client.html')
+
+# Prompt management routes
+@app.route('/load_prompts', methods=['POST'])
+@login_required
+def load_prompts():
+    try:
+        client_id = request.form.get('client_id')
+        if not client_id:
+            return jsonify({'error': 'Client ID cannot be empty'}), 400
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT prompt_name FROM settings WHERE user_id = %s AND client_id = %s AND prompt IS NOT NULL",
+            (current_user.id, client_id)
+        )
+        prompts = [row[0] for row in cur.fetchall()]
+        cur.close()
+        conn.close()
+        return jsonify({'prompts': prompts}), 200
+    except Exception as e:
+        print(f"Error loading prompts: {str(e)}")
+        return jsonify({'error': 'Failed to load prompts'}), 500
 
 # Existing functionality
 AI_API_URL = os.environ.get('AI_API_URL', 'https://api.openai.com/v1/chat/completions')
@@ -233,14 +263,25 @@ DEFAULT_AI_PROMPT = """You are a medical document analyst. Analyze the provided 
 - Tables: Assign tables to appropriate sections (e.g., 'Patient Demographics', 'Adverse Events') based on their content.
 Return a JSON object with these keys and the corresponding content extracted or rewritten from the input. Preserve references separately. Ensure the response is valid JSON. For tables, return a dictionary where keys are descriptive section names and values are lists of rows, each row being a list of cell values. Focus on accurately interpreting and summarizing the source material, avoiding any formatting instructions."""
 
-def load_ai_prompt(client_id=None, user_id=None):
+def load_ai_prompt(client_id=None, user_id=None, prompt_name=None):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        if client_id and user_id:
-            cur.execute("SELECT prompt FROM settings WHERE client_id = %s AND user_id = %s AND prompt IS NOT NULL ORDER BY created_at DESC LIMIT 1", (client_id, user_id))
+        if client_id and user_id and prompt_name:
+            cur.execute(
+                "SELECT prompt FROM settings WHERE client_id = %s AND user_id = %s AND prompt_name = %s AND prompt IS NOT NULL ORDER BY created_at DESC LIMIT 1",
+                (client_id, user_id, prompt_name)
+            )
+        elif client_id and user_id:
+            cur.execute(
+                "SELECT prompt FROM settings WHERE client_id = %s AND user_id = %s AND prompt IS NOT NULL ORDER BY created_at DESC LIMIT 1",
+                (client_id, user_id)
+            )
         else:
-            cur.execute("SELECT prompt FROM settings WHERE user_id = %s AND prompt IS NOT NULL ORDER BY created_at DESC LIMIT 1", (user_id,))
+            cur.execute(
+                "SELECT prompt FROM settings WHERE user_id = %s AND prompt IS NOT NULL ORDER BY created_at DESC LIMIT 1",
+                (user_id,)
+            )
         result = cur.fetchone()
         cur.close()
         conn.close()
@@ -249,15 +290,18 @@ def load_ai_prompt(client_id=None, user_id=None):
         print(f"Error loading AI prompt: {str(e)}")
         return DEFAULT_AI_PROMPT
 
-def save_ai_prompt(prompt, client_id=None, user_id=None):
+def save_ai_prompt(prompt, client_id=None, user_id=None, prompt_name=None):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("INSERT INTO settings (user_id, client_id, prompt) VALUES (%s, %s, %s)", (user_id, client_id, Json({'prompt': prompt})))
+        cur.execute(
+            "INSERT INTO settings (user_id, client_id, prompt, prompt_name) VALUES (%s, %s, %s, %s)",
+            (user_id, client_id, Json({'prompt': prompt}), prompt_name or 'Default Prompt')
+        )
         conn.commit()
         cur.close()
         conn.close()
-        print(f"Saved AI prompt for client {client_id}, user {user_id}: {prompt[:100]}...")
+        print(f"Saved AI prompt '{prompt_name}' for client {client_id}, user {user_id}: {prompt[:100]}...")
     except Exception as e:
         print(f"Error saving AI prompt: {str(e)}")
         raise
@@ -281,9 +325,15 @@ def load_template(output_path, client_id=None, user_id=None):
         conn = get_db_connection()
         cur = conn.cursor()
         if client_id and user_id:
-            cur.execute("SELECT template FROM settings WHERE client_id = %s AND user_id = %s AND template IS NOT NULL ORDER BY created_at DESC LIMIT 1", (client_id, user_id))
+            cur.execute(
+                "SELECT template FROM settings WHERE client_id = %s AND user_id = %s AND template IS NOT NULL ORDER BY created_at DESC LIMIT 1",
+                (client_id, user_id)
+            )
         else:
-            cur.execute("SELECT template FROM settings WHERE user_id = %s AND template IS NOT NULL ORDER BY created_at DESC LIMIT 1", (user_id,))
+            cur.execute(
+                "SELECT template FROM settings WHERE user_id = %s AND template IS NOT NULL ORDER BY created_at DESC LIMIT 1",
+                (user_id,)
+            )
         result = cur.fetchone()
         cur.close()
         conn.close()
@@ -300,7 +350,10 @@ def get_clients(user_id):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("SELECT DISTINCT client_id FROM settings WHERE user_id = %s AND client_id IS NOT NULL", (user_id,))
+        cur.execute(
+            "SELECT DISTINCT client_id FROM settings WHERE user_id = %s AND client_id IS NOT NULL",
+            (user_id,)
+        )
         clients = [row[0] for row in cur.fetchall()]
         cur.close()
         conn.close()
@@ -313,7 +366,6 @@ def extract_content_from_docx(file_path):
     try:
         doc = Document(file_path)
         content = {"text": [], "tables": [], "references": []}
-        
         in_references = False
         for para in doc.paragraphs:
             text = para.text.strip()
@@ -325,7 +377,6 @@ def extract_content_from_docx(file_path):
                     content["references"].append(text)
                 else:
                     content["text"].append(text)
-        
         for table in doc.tables:
             table_data = []
             for row in table.rows:
@@ -335,27 +386,21 @@ def extract_content_from_docx(file_path):
             if table_data:
                 print(f"Extracted table: {table_data}")
                 content["tables"].append(table_data)
-        
         return content
     except Exception as e:
         print(f"Error extracting content from docx: {str(e)}")
         raise
 
-def call_ai_api(content, client_id=None, user_id=None):
+def call_ai_api(content, client_id=None, user_id=None, prompt_name=None):
     headers = {
         "Authorization": f"Bearer {API_KEY}",
         "Content-Type": "application/json"
     }
     text = "\n".join(content["text"])
     tables = json.dumps(content["tables"])
-    
-    ai_prompt = load_ai_prompt(client_id, user_id)
-    
+    ai_prompt = load_ai_prompt(client_id, user_id, prompt_name)
     messages = [
-        {
-            "role": "system",
-            "content": ai_prompt
-        },
+        {"role": "system", "content": ai_prompt},
         {
             "role": "user",
             "content": f"Input Text:\n{text}\n\nTables:\n{tables}\n\nOutput format:\n"
@@ -365,27 +410,22 @@ def call_ai_api(content, client_id=None, user_id=None):
                        "\"references\": [\"ref1\", \"ref2\", ...]}"
         }
     ]
-    
     payload = {
         "model": "gpt-3.5-turbo",
         "messages": messages,
         "max_tokens": 2000,
         "temperature": 0.7
     }
-    
     try:
         response = requests.post(AI_API_URL, headers=headers, json=payload)
         response.raise_for_status()
         data = response.json()
-        
         raw_content = data["choices"][0]["message"]["content"]
         print(f"Raw AI response: {raw_content[:1000]}...")
-        
         try:
             parsed_content = json.loads(raw_content)
             if not isinstance(parsed_content, dict):
                 raise ValueError("AI response is not a JSON object")
-            
             if "tables" in parsed_content and isinstance(parsed_content["tables"], dict):
                 for section_name, table_data in parsed_content["tables"].items():
                     while isinstance(table_data, list) and len(table_data) == 1 and isinstance(table_data[0], list):
@@ -394,7 +434,6 @@ def call_ai_api(content, client_id=None, user_id=None):
                     if not all(isinstance(row, list) for row in table_data):
                         print(f"Invalid table data for {section_name}: {table_data}")
                         parsed_content["tables"][section_name] = []
-            
             print(f"Parsed AI response: {parsed_content}")
             return parsed_content
         except json.JSONDecodeError as e:
@@ -449,11 +488,9 @@ def add_styled_table(doc, table_data, section_name):
         max_cols = max(len(row) for row in table_data)
         table_data = [row + [""] * (max_cols - len(row)) for row in table_data]
         print(f"Adding table for {section_name}: {table_data}")
-        
         table = doc.add_table(rows=len(table_data), cols=max_cols)
         table.alignment = WD_TABLE_ALIGNMENT.CENTER
         table.autofit = True
-        
         for i, row_data in enumerate(table_data):
             row = table.rows[i]
             print(f"Processing row {i}: {row_data}")
@@ -465,7 +502,6 @@ def add_styled_table(doc, table_data, section_name):
                     for run in paragraph.runs:
                         run.font.name = "Calibri"
                         run.font.size = Pt(10)
-        
         for i, row in enumerate(table.rows):
             for j, cell in enumerate(row.cells):
                 print(f"Setting borders for cell at row {i}, col {j}")
@@ -481,7 +517,6 @@ def add_styled_table(doc, table_data, section_name):
                     border.set(qn('w:space'), '0')
                     border.set(qn('w:color'), 'auto')
                     tcBorders.append(border)
-        
         return table
     except Exception as e:
         print(f"Error adding styled table for {section_name}: {str(e)}")
@@ -499,12 +534,10 @@ def create_reformatted_docx(sections, output_path, drug_name="KRESLADI", client_
             "references": []
         }
         sections = {**default_sections, **sections}
-
         template_path = os.path.join(app.config['UPLOAD_FOLDER'], 'temp_template.docx')
         if load_template(template_path, client_id, user_id):
             print(f"Using template for client {client_id}, user {user_id}: {template_path}")
             doc = Document(template_path)
-            
             def replace_placeholder(paragraph, placeholder, content, preserve_style=True):
                 if placeholder.lower() in paragraph.text.lower():
                     if preserve_style:
@@ -518,7 +551,6 @@ def create_reformatted_docx(sections, output_path, drug_name="KRESLADI", client_
                             run.font.size = first_run.font.size
                     else:
                         paragraph.text = content
-
             def add_table_after_placeholder(doc, placeholder, table_data, section_name):
                 for i, para in enumerate(doc.paragraphs):
                     if placeholder.lower() in para.text.lower():
@@ -555,7 +587,6 @@ def create_reformatted_docx(sections, output_path, drug_name="KRESLADI", client_
                                             tcBorders.append(border)
                         return True
                 return False
-
             for para in doc.paragraphs:
                 if "drug name" in para.text.lower():
                     replace_placeholder(para, "drug name", f"{drug_name} (marnetegragene autotemcel)")
@@ -571,7 +602,6 @@ def create_reformatted_docx(sections, output_path, drug_name="KRESLADI", client_
                     replace_placeholder(para, "enclosures", sections["enclosures"])
                 elif "references" in para.text.lower():
                     replace_placeholder(para, "references", "\n".join([f"{i}. {ref}" for i, ref in enumerate(sections["references"], 1)]))
-
             for section_name, table_data in sections["tables"].items():
                 if not add_table_after_placeholder(doc, section_name, table_data, section_name):
                     print(f"No placeholder found for table: {section_name}, appending at end")
@@ -580,48 +610,38 @@ def create_reformatted_docx(sections, output_path, drug_name="KRESLADI", client_
         else:
             print(f"No template found for client {client_id}, user {user_id}, using default formatting")
             doc = Document()
-            
             add_styled_heading(doc, f"{drug_name} (marnetegragene autotemcel)", level=1)
-            
             add_styled_heading(doc, "Summary", level=1)
             for line in sections["summary"].split("\n"):
                 if line.strip():
                     add_styled_text(doc, line, bullet=True)
-            
             add_styled_heading(doc, "Background Information on Leukocyte Adhesion Deficiency (LAD-I)", level=1)
             for line in sections["background"].split("\n"):
                 if line.strip():
                     add_styled_text(doc, line)
-            
             add_styled_heading(doc, "Product Monograph", level=1)
             for line in sections["monograph"].split("\n"):
                 if line.strip():
                     add_styled_text(doc, line, bullet=True)
-            
             if sections["real_world"].strip():
                 add_styled_heading(doc, "Real-World Experiences with KRESLADI", level=1)
                 for line in sections["real_world"].split("\n"):
                     if line.strip():
                         add_styled_text(doc, line)
-            
             print(f"Processing tables: {sections['tables']}")
             for section_name, table_data in sections["tables"].items():
                 add_styled_heading(doc, section_name, level=2)
                 add_styled_table(doc, table_data, section_name)
-            
             add_styled_heading(doc, "Figures", level=1)
             add_styled_text(doc, "Insert Figure 1: Study Administration and Treatment here")
             add_styled_text(doc, "Insert Figure 2: Incidence of Infection-related Hospitalizations here")
-            
             add_styled_heading(doc, "Enclosures", level=1)
             for line in sections["enclosures"].split("\n"):
                 if line.strip():
                     add_styled_text(doc, line, bullet=True)
-            
             add_styled_heading(doc, "References", level=1)
             for i, ref in enumerate(sections["references"], 1):
                 add_styled_text(doc, f"{i}. {ref}", bullet=False)
-        
         doc.save(output_path)
     except Exception as e:
         print(f"Error creating reformatted docx: {str(e)}")
@@ -640,10 +660,11 @@ def load_client():
     try:
         data = request.form
         client_id = data.get('client_id')
+        prompt_name = data.get('prompt_name')
         if not client_id:
             return jsonify({'error': 'Client ID cannot be empty'}), 400
-        prompt = load_ai_prompt(client_id, current_user.id)
-        return jsonify({'prompt': prompt}), 200
+        prompt = load_ai_prompt(client_id, current_user.id, prompt_name)
+        return jsonify({'prompt': prompt, 'prompt_name': prompt_name}), 200
     except Exception as e:
         print(f"Error loading client: {str(e)}")
         return jsonify({'error': 'Failed to load client'}), 500
@@ -656,9 +677,12 @@ def update_prompt():
         print(f"Form data: {dict(data)}")
         new_prompt = data.get('prompt', '').strip()
         client_id = data.get('client_id')
+        prompt_name = data.get('prompt_name', 'Default Prompt').strip()
         if not new_prompt:
             return jsonify({'error': 'Prompt cannot be empty'}), 400
-        save_ai_prompt(new_prompt, client_id, current_user.id)
+        if not prompt_name:
+            return jsonify({'error': 'Prompt name cannot be empty'}), 400
+        save_ai_prompt(new_prompt, client_id, current_user.id, prompt_name)
         return jsonify({'message': 'Prompt updated successfully'}), 200
     except Exception as e:
         print(f"Error updating prompt: {str(e)}")
@@ -696,21 +720,18 @@ def upload_file():
         if not file.filename.endswith('.docx'):
             return "Only .docx files are supported", 400
         client_id = request.form.get('client_id')
-        
+        prompt_name = request.form.get('prompt_name')
         filename = secure_filename(file.filename)
         input_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(input_path)
-        
         content = extract_content_from_docx(input_path)
-        sections = call_ai_api(content, client_id, current_user.id)
+        sections = call_ai_api(content, client_id, current_user.id, prompt_name)
         if "error" in sections:
             print(f"AI processing failed: {sections['error']}")
             return f"AI API error: {sections['error']}", 500
-        
         sections["references"] = content["references"]
         output_path = os.path.join(app.config['UPLOAD_FOLDER'], f"reformatted_{filename}")
         create_reformatted_docx(sections, output_path, client_id=client_id, user_id=current_user.id)
-        
         return send_file(output_path, as_attachment=True, download_name=f"reformatted_{filename}")
     except Exception as e:
         print(f"Upload error: {str(e)}")

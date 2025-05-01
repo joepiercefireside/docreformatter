@@ -23,12 +23,26 @@
             </select>
         </div>
         <div class="form-section">
+            <h3>Prompt Selection</h3>
+            <select id="promptSelect" class="form-select mb-3">
+                <option value="">Select a prompt</option>
+            </select>
+            <form id="newPromptForm" class="mb-3">
+                <div class="mb-3">
+                    <label for="new_prompt_name" class="form-label">New Prompt Name</label>
+                    <input type="text" class="form-control" id="new_prompt_name" name="new_prompt_name" placeholder="Enter new prompt name">
+                </div>
+                <button type="submit" class="btn btn-primary">Create New Prompt</button>
+            </form>
+        </div>
+        <div class="form-section">
             <h3>AI Prompt</h3>
             <form id="promptForm">
                 <div class="mb-3">
                     <textarea id="prompt" name="prompt" class="form-control" rows="10">{{ ai_prompt }}</textarea>
                 </div>
                 <input type="hidden" id="client_id" name="client_id">
+                <input type="hidden" id="prompt_name" name="prompt_name">
                 <button type="submit" class="btn btn-primary">Update Prompt</button>
             </form>
         </div>
@@ -49,32 +63,114 @@
                     <input type="file" name="file" class="form-control" accept=".docx">
                 </div>
                 <input type="hidden" name="client_id" id="upload_client_id">
+                <input type="hidden" name="prompt_name" id="upload_prompt_name">
                 <button type="submit" class="btn btn-primary">Upload and Reformat</button>
             </form>
         </div>
     </div>
     <script>
-        document.getElementById('clientSelect').addEventListener('change', function() {
+        const clientSelect = document.getElementById('clientSelect');
+        const promptSelect = document.getElementById('promptSelect');
+        const promptTextarea = document.getElementById('prompt');
+        const clientIdInput = document.getElementById('client_id');
+        const promptNameInput = document.getElementById('prompt_name');
+        const templateClientIdInput = document.getElementById('template_client_id');
+        const uploadClientIdInput = document.getElementById('upload_client_id');
+        const uploadPromptNameInput = document.getElementById('upload_prompt_name');
+
+        clientSelect.addEventListener('change', function() {
             const clientId = this.value;
+            promptSelect.innerHTML = '<option value="">Select a prompt</option>';
+            promptTextarea.value = '';
+            clientIdInput.value = '';
+            promptNameInput.value = '';
+            templateClientIdInput.value = '';
+            uploadClientIdInput.value = '';
+            uploadPromptNameInput.value = '';
             if (clientId) {
-                fetch('/load_client', {
+                fetch('/load_prompts', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                     body: `client_id=${encodeURIComponent(clientId)}`
                 })
                 .then(response => response.json())
                 .then(data => {
-                    if (data.prompt) {
-                        document.getElementById('prompt').value = data.prompt;
-                        document.getElementById('client_id').value = clientId;
-                        document.getElementById('template_client_id').value = clientId;
-                        document.getElementById('upload_client_id').value = clientId;
+                    if (data.prompts) {
+                        data.prompts.forEach(prompt => {
+                            const option = document.createElement('option');
+                            option.value = prompt;
+                            option.text = prompt;
+                            promptSelect.appendChild(option);
+                        });
+                        clientIdInput.value = clientId;
+                        templateClientIdInput.value = clientId;
+                        uploadClientIdInput.value = clientId;
                     } else {
                         alert(data.error);
                     }
                 })
                 .catch(error => alert('Error: ' + error));
             }
+        });
+
+        promptSelect.addEventListener('change', function() {
+            const clientId = clientSelect.value;
+            const promptName = this.value;
+            if (clientId && promptName) {
+                fetch('/load_client', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: `client_id=${encodeURIComponent(clientId)}&prompt_name=${encodeURIComponent(promptName)}`
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.prompt) {
+                        promptTextarea.value = data.prompt;
+                        promptNameInput.value = promptName;
+                        uploadPromptNameInput.value = promptName;
+                    } else {
+                        alert(data.error);
+                    }
+                })
+                .catch(error => alert('Error: ' + error));
+            }
+        });
+
+        document.getElementById('newPromptForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            const clientId = clientSelect.value;
+            const newPromptName = document.getElementById('new_prompt_name').value;
+            if (!clientId) {
+                alert('Please select a client first');
+                return;
+            }
+            if (!newPromptName) {
+                alert('Prompt name cannot be empty');
+                return;
+            }
+            const defaultPrompt = promptTextarea.value || '{{ ai_prompt }}';
+            fetch('/update_prompt', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: `client_id=${encodeURIComponent(clientId)}&prompt_name=${encodeURIComponent(newPromptName)}&prompt=${encodeURIComponent(defaultPrompt)}`
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.message) {
+                    const option = document.createElement('option');
+                    option.value = newPromptName;
+                    option.text = newPromptName;
+                    promptSelect.appendChild(option);
+                    promptSelect.value = newPromptName;
+                    promptNameInput.value = newPromptName;
+                    uploadPromptNameInput.value = newPromptName;
+                    document.getElementById('new_prompt_name').value = '';
+                    alert(data.message);
+                } else {
+                    alert(data.error);
+                }
+            })
+            .catch(error => alert('Error: ' + error));
         });
 
         document.getElementById('promptForm').addEventListener('submit', function(e) {
