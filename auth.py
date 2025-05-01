@@ -1,7 +1,6 @@
-from flask import request, render_template, jsonify, redirect, url_for, flash, session
+from flask import request, render_template, redirect, url_for, flash, session
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from authlib.integrations.flask_client import OAuth
-import psycopg2
 import bcrypt
 import secrets
 from database import get_db_connection
@@ -105,7 +104,7 @@ def setup_auth(app):
         redirect_uri = url_for('google_auth', _external=True)
         return google.authorize_redirect(redirect_uri, nonce=nonce)
 
-    @app.route('/google_auth')
+    @app.route('/auth/google/callback')
     def google_auth():
         try:
             token = google.authorize_access_token()
