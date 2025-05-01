@@ -1,4 +1,4 @@
-from flask import Flask, request, send_file, render_template, jsonify, redirect, url_for, flash
+from flask import Flask, request, send_file, render_template, jsonify, redirect, url_for, flash, session
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from docx import Document
 from docx.shared import Pt
@@ -14,7 +14,6 @@ from psycopg2.extras import Json
 from werkzeug.utils import secure_filename
 import bcrypt
 from authlib.integrations.flask_client import OAuth
-from flask import session
 import secrets
 
 app = Flask(__name__)
@@ -23,6 +22,7 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'your-secret-key')
 app.config['GOOGLE_CLIENT_ID'] = os.environ.get('GOOGLE_CLIENT_ID')
 app.config['GOOGLE_CLIENT_SECRET'] = os.environ.get('GOOGLE_CLIENT_SECRET')
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL')
 
 # Flask-Login setup
 login_manager = LoginManager()
@@ -60,11 +60,12 @@ def init_db():
             CREATE TABLE IF NOT EXISTS settings (
                 id SERIAL PRIMARY KEY,
                 user_id INTEGER REFERENCES users(id),
-                client_id VARCHAR(50),
+                client_id VARCHAR(50) NOT NULL,
                 prompt JSONB,
-                prompt_name VARCHAR(255),
+                prompt_name VARCHAR(255) NOT NULL,
                 template BYTEA,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (user_id, client_id, prompt_name)
             );
             CREATE INDEX IF NOT EXISTS idx_client_id ON settings(client_id);
         """)
@@ -120,10 +121,10 @@ def login():
             if user and bcrypt.checkpw(password.encode('utf-8'), user[2].encode('utf-8')):
                 login_user(User(user[0], user[1]))
                 return redirect(url_for('index'))
-            flash('Invalid email or password')
+            flash('Invalid email or password', 'danger')
         except Exception as e:
             print(f"Error during login: {str(e)}")
-            flash('Login failed')
+            flash('Login failed', 'danger')
     return render_template('login.html')
 
 @app.route('/register', methods=['GET', 'POST'])
@@ -138,7 +139,7 @@ def register():
             cur = conn.cursor()
             cur.execute("SELECT id FROM users WHERE email = %s", (email,))
             if cur.fetchone():
-                flash('Email already registered')
+                flash('Email already registered', 'danger')
                 cur.close()
                 conn.close()
                 return render_template('register.html')
@@ -152,13 +153,13 @@ def register():
             return redirect(url_for('index'))
         except Exception as e:
             print(f"Error during registration: {str(e)}")
-            flash('Registration failed')
+            flash('Registration failed', 'danger')
     return render_template('register.html')
 
 @app.route('/google_login')
 def google_login():
-    nonce = secrets.token_urlsafe(16)  # Generate a random nonce
-    session['nonce'] = nonce  # Store nonce in session
+    nonce = secrets.token_urlsafe(16)
+    session['nonce'] = nonce
     redirect_uri = url_for('google_auth', _external=True)
     return google.authorize_redirect(redirect_uri, nonce=nonce)
 
@@ -168,7 +169,7 @@ def google_auth():
         token = google.authorize_access_token()
         if not token:
             raise ValueError("No token received from Google")
-        nonce = session.pop('nonce', None)  # Retrieve and remove nonce
+        nonce = session.pop('nonce', None)
         if not nonce:
             raise ValueError("Nonce not found in session")
         user_info = google.parse_id_token(token, nonce=nonce)
@@ -196,12 +197,14 @@ def google_auth():
         print(f"Error during Google auth: {str(e)}")
         import traceback
         print(traceback.format_exc())
-        flash(f'Google login failed: {str(e)}')
+        flash(f'Google login failed: {str(e)}', 'danger')
         return redirect(url_for('login'))
 
 @app.route('/logout')
 @login_required
 def logout():
+    session.pop('selected_client', None)
+    session.pop('selected_prompt', None)
     logout_user()
     flash('You have been logged out.', 'success')
     return redirect(url_for('login'))
@@ -216,16 +219,17 @@ def create_client():
             prompt_name = request.form.get('prompt_name', 'Default Prompt').strip()
             prompt_content = request.form.get('prompt_content', DEFAULT_AI_PROMPT).strip()
             if not client_id:
-                flash('Client ID cannot be empty')
+                flash('Client ID cannot be empty', 'danger')
                 return redirect(url_for('create_client'))
             if not prompt_name:
-                flash('Prompt name cannot be empty')
+                flash('Prompt name cannot be empty', 'danger')
                 return redirect(url_for('create_client'))
             conn = get_db_connection()
             cur = conn.cursor()
-            cur.execute("SELECT id FROM settings WHERE user_id = %s AND client_id = %s", (current_user.id, client_id))
+            cur.execute("SELECT id FROM settings WHERE user_id = %s AND client_id = %s AND prompt_name = %s", 
+                       (current_user.id, client_id, prompt_name))
             if cur.fetchone():
-                flash('Client ID already exists')
+                flash('Client ID and prompt name combination already exists', 'danger')
                 cur.close()
                 conn.close()
                 return redirect(url_for('create_client'))
@@ -236,11 +240,13 @@ def create_client():
             conn.commit()
             cur.close()
             conn.close()
-            flash('Client created successfully')
+            session['selected_client'] = client_id
+            session['selected_prompt'] = prompt_name
+            flash(f'Client {client_id} created successfully', 'success')
             return redirect(url_for('index'))
         except Exception as e:
             print(f"Error creating client: {str(e)}")
-            flash('Failed to create client')
+            flash('Failed to create client', 'danger')
             return redirect(url_for('create_client'))
     return render_template('create_client.html')
 
@@ -255,16 +261,32 @@ def load_prompts():
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute(
-            "SELECT prompt_name FROM settings WHERE user_id = %s AND client_id = %s AND prompt IS NOT NULL",
+            "SELECT prompt_name, prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND client_id = %s AND prompt IS NOT NULL",
             (current_user.id, client_id)
         )
-        prompts = [row[0] for row in cur.fetchall()]
+        prompts = [{'prompt_name': row[0], 'prompt_content': row[1]} for row in cur.fetchall()]
         cur.close()
         conn.close()
+        print(f"Loaded prompts for client {client_id}: {prompts}")
         return jsonify({'prompts': prompts}), 200
     except Exception as e:
         print(f"Error loading prompts: {str(e)}")
         return jsonify({'error': 'Failed to load prompts'}), 500
+
+@app.route('/load_client', methods=['POST'])
+@login_required
+def load_client():
+    try:
+        data = request.form
+        client_id = data.get('client_id')
+        prompt_name = data.get('prompt_name')
+        if not client_id:
+            return jsonify({'error': 'Client ID cannot be empty'}), 400
+        prompt = load_ai_prompt(client_id, current_user.id, prompt_name)
+        return jsonify({'prompt': prompt, 'prompt_name': prompt_name}), 200
+    except Exception as e:
+        print(f"Error loading client: {str(e)}")
+        return jsonify({'error': 'Failed to load client'}), 500
 
 # Existing functionality
 AI_API_URL = os.environ.get('AI_API_URL', 'https://api.openai.com/v1/chat/completions')
@@ -285,23 +307,23 @@ def load_ai_prompt(client_id=None, user_id=None, prompt_name=None):
         cur = conn.cursor()
         if client_id and user_id and prompt_name:
             cur.execute(
-                "SELECT prompt FROM settings WHERE client_id = %s AND user_id = %s AND prompt_name = %s AND prompt IS NOT NULL ORDER BY created_at DESC LIMIT 1",
+                "SELECT prompt->'prompt' AS prompt_content FROM settings WHERE client_id = %s AND user_id = %s AND prompt_name = %s AND prompt IS NOT NULL ORDER BY created_at DESC LIMIT 1",
                 (client_id, user_id, prompt_name)
             )
         elif client_id and user_id:
             cur.execute(
-                "SELECT prompt FROM settings WHERE client_id = %s AND user_id = %s AND prompt IS NOT NULL ORDER BY created_at DESC LIMIT 1",
+                "SELECT prompt->'prompt' AS prompt_content FROM settings WHERE client_id = %s AND user_id = %s AND prompt IS NOT NULL ORDER BY created_at DESC LIMIT 1",
                 (client_id, user_id)
             )
         else:
             cur.execute(
-                "SELECT prompt FROM settings WHERE user_id = %s AND prompt IS NOT NULL ORDER BY created_at DESC LIMIT 1",
+                "SELECT prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND prompt IS NOT NULL ORDER BY created_at DESC LIMIT 1",
                 (user_id,)
             )
         result = cur.fetchone()
         cur.close()
         conn.close()
-        return result[0]['prompt'] if result and result[0] else DEFAULT_AI_PROMPT
+        return result[0] if result and result[0] else DEFAULT_AI_PROMPT
     except Exception as e:
         print(f"Error loading AI prompt: {str(e)}")
         return DEFAULT_AI_PROMPT
@@ -311,7 +333,7 @@ def save_ai_prompt(prompt, client_id=None, user_id=None, prompt_name=None):
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO settings (user_id, client_id, prompt, prompt_name) VALUES (%s, %s, %s, %s)",
+            "INSERT INTO settings (user_id, client_id, prompt, prompt_name) VALUES (%s, %s, %s, %s) ON CONFLICT (user_id, client_id, prompt_name) DO UPDATE SET prompt = EXCLUDED.prompt",
             (user_id, client_id, Json({'prompt': prompt}), prompt_name or 'Default Prompt')
         )
         conn.commit()
@@ -322,25 +344,33 @@ def save_ai_prompt(prompt, client_id=None, user_id=None, prompt_name=None):
         print(f"Error saving AI prompt: {str(e)}")
         raise
 
-def save_template(file, client_id=None, user_id=None):
+def save_template(file, client_id=None, user_id=None, prompt_name=None):
     try:
         file_data = file.read()
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("INSERT INTO settings (user_id, client_id, template) VALUES (%s, %s, %s)", (user_id, client_id, file_data))
+        cur.execute(
+            "INSERT INTO settings (user_id, client_id, template, prompt_name) VALUES (%s, %s, %s, %s) ON CONFLICT (user_id, client_id, prompt_name) DO UPDATE SET template = EXCLUDED.template",
+            (user_id, client_id, file_data, prompt_name or 'Default Prompt')
+        )
         conn.commit()
         cur.close()
         conn.close()
-        print(f"Saved template for client {client_id}, user {user_id}")
+        print(f"Saved template for client {client_id}, user {user_id}, prompt {prompt_name}")
     except Exception as e:
         print(f"Error saving template: {str(e)}")
         raise
 
-def load_template(output_path, client_id=None, user_id=None):
+def load_template(output_path, client_id=None, user_id=None, prompt_name=None):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        if client_id and user_id:
+        if client_id and user_id and prompt_name:
+            cur.execute(
+                "SELECT template FROM settings WHERE client_id = %s AND user_id = %s AND prompt_name = %s AND template IS NOT NULL ORDER BY created_at DESC LIMIT 1",
+                (client_id, user_id, prompt_name)
+            )
+        elif client_id and user_id:
             cur.execute(
                 "SELECT template FROM settings WHERE client_id = %s AND user_id = %s AND template IS NOT NULL ORDER BY created_at DESC LIMIT 1",
                 (client_id, user_id)
@@ -367,12 +397,13 @@ def get_clients(user_id):
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute(
-            "SELECT DISTINCT client_id FROM settings WHERE user_id = %s AND client_id IS NOT NULL",
+            "SELECT DISTINCT client_id FROM settings WHERE user_id = %s AND client_id IS NOT NULL AND client_id != ''",
             (user_id,)
         )
         clients = [row[0] for row in cur.fetchall()]
         cur.close()
         conn.close()
+        print(f"Fetched clients for user {user_id}: {clients}")
         return clients
     except Exception as e:
         print(f"Error getting clients: {str(e)}")
@@ -663,27 +694,104 @@ def create_reformatted_docx(sections, output_path, drug_name="KRESLADI", client_
         print(f"Error creating reformatted docx: {str(e)}")
         raise
 
-@app.route('/')
+@app.route('/', methods=['GET', 'POST'])
 @login_required
 def index():
-    ai_prompt = load_ai_prompt(user_id=current_user.id)
     clients = get_clients(current_user.id)
-    return render_template('index.html', ai_prompt=ai_prompt, clients=clients)
+    print(f"Clients for user {current_user.id}: {clients}")
+    
+    # Handle client selection
+    selected_client = session.get('selected_client')
+    selected_prompt = session.get('selected_prompt')
+    prompt_content = ""
+    prompts = []
 
-@app.route('/load_client', methods=['POST'])
-@login_required
-def load_client():
-    try:
-        data = request.form
-        client_id = data.get('client_id')
-        prompt_name = data.get('prompt_name')
-        if not client_id:
-            return jsonify({'error': 'Client ID cannot be empty'}), 400
-        prompt = load_ai_prompt(client_id, current_user.id, prompt_name)
-        return jsonify({'prompt': prompt, 'prompt_name': prompt_name}), 200
-    except Exception as e:
-        print(f"Error loading client: {str(e)}")
-        return jsonify({'error': 'Failed to load client'}), 500
+    if request.method == 'POST':
+        action = request.form.get('action')
+        client_id = request.form.get('client_id')
+        
+        if action == 'select_client' and client_id in clients:
+            session['selected_client'] = client_id
+            session.pop('selected_prompt', None)
+            selected_client = client_id
+            flash(f'Selected client: {client_id}', 'success')
+        
+        elif action == 'update_prompt':
+            prompt_name = request.form.get('prompt_name')
+            prompt_content = request.form.get('prompt_content')
+            if prompt_name and prompt_content and selected_client:
+                save_ai_prompt(prompt_content, selected_client, current_user.id, prompt_name)
+                session['selected_prompt'] = prompt_name
+                flash('Prompt updated successfully', 'success')
+            else:
+                flash('Failed to update prompt', 'danger')
+        
+        elif action == 'create_prompt':
+            new_prompt_name = request.form.get('new_prompt_name')
+            if new_prompt_name and selected_client:
+                save_ai_prompt('', selected_client, current_user.id, new_prompt_name)
+                session['selected_prompt'] = new_prompt_name
+                flash(f'Created new prompt: {new_prompt_name}', 'success')
+            else:
+                flash('Failed to create prompt', 'danger')
+        
+        elif action == 'upload_template':
+            template_file = request.files.get('template_file')
+            prompt_name = request.form.get('prompt_name')
+            if template_file and template_file.filename.endswith('.docx'):
+                save_template(template_file, selected_client, current_user.id, prompt_name or selected_prompt)
+                flash('Template uploaded successfully', 'success')
+            else:
+                flash('Invalid template file', 'danger')
+        
+        elif action == 'upload_document':
+            document_file = request.files.get('document_file')
+            prompt_name = request.form.get('prompt_name')
+            if document_file and document_file.filename.endswith('.docx') and prompt_name:
+                filename = secure_filename(document_file.filename)
+                input_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+                output_path = os.path.join(app.config['UPLOAD_FOLDER'], f"reformatted_{filename}")
+                document_file.save(input_path)
+                content = extract_content_from_docx(input_path)
+                sections = call_ai_api(content, selected_client, current_user.id, prompt_name)
+                if "error" in sections:
+                    flash(f"AI processing failed: {sections['error']}", 'danger')
+                    return redirect(url_for('index'))
+                sections["references"] = content["references"]
+                create_reformatted_docx(sections, output_path, client_id=selected_client, user_id=current_user.id)
+                response = send_file(output_path, as_attachment=True, download_name=f"reformatted_{filename}")
+                os.remove(input_path)
+                os.remove(output_path)
+                return response
+            else:
+                flash('Invalid document file or prompt', 'danger')
+
+    # Load prompts for selected client
+    if selected_client:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT prompt_name, prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND client_id = %s AND prompt IS NOT NULL",
+            (current_user.id, selected_client)
+        )
+        prompts = [{'prompt_name': row[0], 'prompt_content': row[1]} for row in cur.fetchall()]
+        cur.close()
+        conn.close()
+        print(f"Prompts for client {selected_client}: {prompts}")
+        if prompts:
+            if selected_prompt and any(p['prompt_name'] == selected_prompt for p in prompts):
+                prompt_content = next(p['prompt_content'] for p in prompts if p['prompt_name'] == selected_prompt)
+            else:
+                selected_prompt = prompts[0]['prompt_name']
+                session['selected_prompt'] = selected_prompt
+                prompt_content = prompts[0]['prompt_content']
+
+    return render_template('index.html', 
+                         clients=clients, 
+                         selected_client=selected_client, 
+                         prompts=prompts, 
+                         selected_prompt=selected_prompt, 
+                         prompt_content=prompt_content)
 
 @app.route('/update_prompt', methods=['POST'])
 @login_required
@@ -699,6 +807,7 @@ def update_prompt():
         if not prompt_name:
             return jsonify({'error': 'Prompt name cannot be empty'}), 400
         save_ai_prompt(new_prompt, client_id, current_user.id, prompt_name)
+        session['selected_prompt'] = prompt_name
         return jsonify({'message': 'Prompt updated successfully'}), 200
     except Exception as e:
         print(f"Error updating prompt: {str(e)}")
@@ -716,7 +825,8 @@ def upload_template():
         if not file.filename.endswith('.docx'):
             return jsonify({'error': 'Only .docx files are supported'}), 400
         client_id = request.form.get('client_id')
-        save_template(file, client_id, current_user.id)
+        prompt_name = request.form.get('prompt_name', 'Default Prompt')
+        save_template(file, client_id, current_user.id, prompt_name)
         return jsonify({'message': 'Template uploaded successfully'}), 200
     except Exception as e:
         print(f"Error uploading template: {str(e)}")
