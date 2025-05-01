@@ -155,7 +155,7 @@ def register():
 
 @app.route('/google_login')
 def google_login():
-    redirect_uri = url_for('google_auth', _external=True)
+    redirect_uri = 'https://diligentreformatter-cf11e263a6b8.herokuapp.com/google_auth'
     return google.authorize_redirect(redirect_uri)
 
 @app.route('/google_auth')
