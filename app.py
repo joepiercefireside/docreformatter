@@ -1,4 +1,5 @@
-from flask import Flask, request, send_file, render_template, jsonify
+from flask import Flask, request, send_file, render_template, jsonify, redirect, url_for, flash
+from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from flask_httpauth import HTTPBasicAuth
 from docx import Document
 from docx.shared import Pt
@@ -8,24 +9,38 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 import requests
 import json
-import re
 import os
 import psycopg2
 from psycopg2.extras import Json
 from werkzeug.utils import secure_filename
+from werkzeug.security import generate_password_hash, check_password_hash
+import bcrypt
+from authlib.integrations.flask_client import OAuth
+from urllib.parse import quote_plus
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = '/tmp'
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
-auth = HTTPBasicAuth()
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'your-secret-key')
+app.config['GOOGLE_CLIENT_ID'] = os.environ.get('GOOGLE_CLIENT_ID')
+app.config['GOOGLE_CLIENT_SECRET'] = os.environ.get('GOOGLE_CLIENT_SECRET')
 
-AUTH_PASSWORD = os.environ.get('AUTH_PASSWORD', 'default-password')
-users = {"admin": AUTH_PASSWORD}
+# Flask-Login setup
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = 'login'
 
-@auth.verify_password
-def verify_password(username, password):
-    return users.get(username) == password
+# OAuth setup
+oauth = OAuth(app)
+google = oauth.register(
+    name='google',
+    client_id=app.config['GOOGLE_CLIENT_ID'],
+    client_secret=app.config['GOOGLE_CLIENT_SECRET'],
+    server_metadata_url='https://accounts.google.com/.well-known/openid-configuration',
+    client_kwargs={'scope': 'openid email profile'}
+)
 
+# Database setup
 DATABASE_URL = os.environ.get('DATABASE_URL')
 def get_db_connection():
     conn = psycopg2.connect(DATABASE_URL, sslmode='require')
@@ -36,8 +51,16 @@ def init_db():
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                email VARCHAR(255) UNIQUE NOT NULL,
+                password_hash VARCHAR(255),
+                google_id VARCHAR(255) UNIQUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
             CREATE TABLE IF NOT EXISTS settings (
                 id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES users(id),
                 client_id VARCHAR(50),
                 prompt JSONB,
                 template BYTEA,
@@ -53,10 +76,123 @@ def init_db():
         print(f"Error initializing database: {str(e)}")
         raise
 
-# Initialize database on app startup
 with app.app_context():
     init_db()
 
+# User model
+class User(UserMixin):
+    def __init__(self, id, email, google_id=None):
+        self.id = id
+        self.email = email
+        self.google_id = google_id
+
+@login_manager.user_loader
+def load_user(user_id):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT id, email, google_id FROM users WHERE id = %s", (user_id,))
+        user = cur.fetchone()
+        cur.close()
+        conn.close()
+        if user:
+            return User(user[0], user[1], user[2])
+        return None
+    except Exception as e:
+        print(f"Error loading user: {str(e)}")
+        return None
+
+# Authentication routes
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if current_user.is_authenticated:
+        return redirect(url_for('index'))
+    if request.method == 'POST':
+        email = request.form.get('email')
+        password = request.form.get('password')
+        try:
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute("SELECT id, email, password_hash FROM users WHERE email = %s", (email,))
+            user = cur.fetchone()
+            cur.close()
+            conn.close()
+            if user and bcrypt.checkpw(password.encode('utf-8'), user[2].encode('utf-8')):
+                login_user(User(user[0], user[1]))
+                return redirect(url_for('index'))
+            flash('Invalid email or password')
+        except Exception as e:
+            print(f"Error during login: {str(e)}")
+            flash('Login failed')
+    return render_template('login.html')
+
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    if current_user.is_authenticated:
+        return redirect(url_for('index'))
+    if request.method == 'POST':
+        email = request.form.get('email')
+        password = request.form.get('password')
+        try:
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute("SELECT id FROM users WHERE email = %s", (email,))
+            if cur.fetchone():
+                flash('Email already registered')
+                cur.close()
+                conn.close()
+                return render_template('register.html')
+            password_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+            cur.execute("INSERT INTO users (email, password_hash) VALUES (%s, %s) RETURNING id", (email, password_hash))
+            user_id = cur.fetchone()[0]
+            conn.commit()
+            cur.close()
+            conn.close()
+            login_user(User(user_id, email))
+            return redirect(url_for('index'))
+        except Exception as e:
+            print(f"Error during registration: {str(e)}")
+            flash('Registration failed')
+    return render_template('register.html')
+
+@app.route('/google_login')
+def google_login():
+    redirect_uri = url_for('google_auth', _external=True)
+    return google.authorize_redirect(redirect_uri)
+
+@app.route('/google_auth')
+def google_auth():
+    token = google.authorize_access_token()
+    user_info = google.parse_id_token(token)
+    google_id = user_info['sub']
+    email = user_info['email']
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT id, email FROM users WHERE google_id = %s OR email = %s", (google_id, email))
+        user = cur.fetchone()
+        if user:
+            login_user(User(user[0], user[1], google_id))
+        else:
+            cur.execute("INSERT INTO users (email, google_id) VALUES (%s, %s) RETURNING id", (email, google_id))
+            user_id = cur.fetchone()[0]
+            conn.commit()
+            login_user(User(user_id, email, google_id))
+        cur.close()
+        conn.close()
+        return redirect(url_for('index'))
+    except Exception as e:
+        print(f"Error during Google auth: {str(e)}")
+        flash('Google login failed')
+        return redirect(url_for('login'))
+
+@app.route('/logout')
+@login_required
+def logout():
+    logout_user()
+    return redirect(url_for('login'))
+
+# Existing functionality (updated for user_id)
 AI_API_URL = os.environ.get('AI_API_URL', 'https://api.openai.com/v1/chat/completions')
 API_KEY = os.environ.get('API_KEY', 'your-api-key')
 
@@ -69,14 +205,14 @@ DEFAULT_AI_PROMPT = """You are a medical document analyst. Analyze the provided 
 - Tables: Assign tables to appropriate sections (e.g., 'Patient Demographics', 'Adverse Events') based on their content.
 Return a JSON object with these keys and the corresponding content extracted or rewritten from the input. Preserve references separately. Ensure the response is valid JSON. For tables, return a dictionary where keys are descriptive section names and values are lists of rows, each row being a list of cell values. Focus on accurately interpreting and summarizing the source material, avoiding any formatting instructions."""
 
-def load_ai_prompt(client_id=None):
+def load_ai_prompt(client_id=None, user_id=None):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        if client_id:
-            cur.execute("SELECT prompt FROM settings WHERE client_id = %s AND prompt IS NOT NULL ORDER BY created_at DESC LIMIT 1", (client_id,))
+        if client_id and user_id:
+            cur.execute("SELECT prompt FROM settings WHERE client_id = %s AND user_id = %s AND prompt IS NOT NULL ORDER BY created_at DESC LIMIT 1", (client_id, user_id))
         else:
-            cur.execute("SELECT prompt FROM settings WHERE prompt IS NOT NULL ORDER BY created_at DESC LIMIT 1")
+            cur.execute("SELECT prompt FROM settings WHERE user_id = %s AND prompt IS NOT NULL ORDER BY created_at DESC LIMIT 1", (user_id,))
         result = cur.fetchone()
         cur.close()
         conn.close()
@@ -85,41 +221,41 @@ def load_ai_prompt(client_id=None):
         print(f"Error loading AI prompt: {str(e)}")
         return DEFAULT_AI_PROMPT
 
-def save_ai_prompt(prompt, client_id=None):
+def save_ai_prompt(prompt, client_id=None, user_id=None):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("INSERT INTO settings (client_id, prompt) VALUES (%s, %s)", (client_id, Json({'prompt': prompt})))
+        cur.execute("INSERT INTO settings (user_id, client_id, prompt) VALUES (%s, %s, %s)", (user_id, client_id, Json({'prompt': prompt})))
         conn.commit()
         cur.close()
         conn.close()
-        print(f"Saved AI prompt for client {client_id}: {prompt[:100]}...")
+        print(f"Saved AI prompt for client {client_id}, user {user_id}: {prompt[:100]}...")
     except Exception as e:
         print(f"Error saving AI prompt: {str(e)}")
         raise
 
-def save_template(file, client_id=None):
+def save_template(file, client_id=None, user_id=None):
     try:
         file_data = file.read()
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("INSERT INTO settings (client_id, template) VALUES (%s, %s)", (client_id, file_data))
+        cur.execute("INSERT INTO settings (user_id, client_id, template) VALUES (%s, %s, %s)", (user_id, client_id, file_data))
         conn.commit()
         cur.close()
         conn.close()
-        print(f"Saved template for client {client_id}")
+        print(f"Saved template for client {client_id}, user {user_id}")
     except Exception as e:
         print(f"Error saving template: {str(e)}")
         raise
 
-def load_template(output_path, client_id=None):
+def load_template(output_path, client_id=None, user_id=None):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        if client_id:
-            cur.execute("SELECT template FROM settings WHERE client_id = %s AND template IS NOT NULL ORDER BY created_at DESC LIMIT 1", (client_id,))
+        if client_id and user_id:
+            cur.execute("SELECT template FROM settings WHERE client_id = %s AND user_id = %s AND template IS NOT NULL ORDER BY created_at DESC LIMIT 1", (client_id, user_id))
         else:
-            cur.execute("SELECT template FROM settings WHERE template IS NOT NULL ORDER BY created_at DESC LIMIT 1")
+            cur.execute("SELECT template FROM settings WHERE user_id = %s AND template IS NOT NULL ORDER BY created_at DESC LIMIT 1", (user_id,))
         result = cur.fetchone()
         cur.close()
         conn.close()
@@ -132,11 +268,11 @@ def load_template(output_path, client_id=None):
         print(f"Error loading template: {str(e)}")
         return False
 
-def get_clients():
+def get_clients(user_id):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("SELECT DISTINCT client_id FROM settings WHERE client_id IS NOT NULL")
+        cur.execute("SELECT DISTINCT client_id FROM settings WHERE user_id = %s AND client_id IS NOT NULL", (user_id,))
         clients = [row[0] for row in cur.fetchall()]
         cur.close()
         conn.close()
@@ -177,7 +313,7 @@ def extract_content_from_docx(file_path):
         print(f"Error extracting content from docx: {str(e)}")
         raise
 
-def call_ai_api(content, client_id=None):
+def call_ai_api(content, client_id=None, user_id=None):
     headers = {
         "Authorization": f"Bearer {API_KEY}",
         "Content-Type": "application/json"
@@ -185,7 +321,7 @@ def call_ai_api(content, client_id=None):
     text = "\n".join(content["text"])
     tables = json.dumps(content["tables"])
     
-    ai_prompt = load_ai_prompt(client_id)
+    ai_prompt = load_ai_prompt(client_id, user_id)
     
     messages = [
         {
@@ -323,7 +459,7 @@ def add_styled_table(doc, table_data, section_name):
         print(f"Error adding styled table for {section_name}: {str(e)}")
         raise
 
-def create_reformatted_docx(sections, output_path, drug_name="KRESLADI", client_id=None):
+def create_reformatted_docx(sections, output_path, drug_name="KRESLADI", client_id=None, user_id=None):
     try:
         default_sections = {
             "summary": "No summary provided",
@@ -337,8 +473,8 @@ def create_reformatted_docx(sections, output_path, drug_name="KRESLADI", client_
         sections = {**default_sections, **sections}
 
         template_path = os.path.join(app.config['UPLOAD_FOLDER'], 'temp_template.docx')
-        if load_template(template_path, client_id):
-            print(f"Using template for client {client_id}: {template_path}")
+        if load_template(template_path, client_id, user_id):
+            print(f"Using template for client {client_id}, user {user_id}: {template_path}")
             doc = Document(template_path)
             
             def replace_placeholder(paragraph, placeholder, content, preserve_style=True):
@@ -414,7 +550,7 @@ def create_reformatted_docx(sections, output_path, drug_name="KRESLADI", client_
                     para = doc.add_paragraph(section_name)
                     add_styled_table(doc, table_data, section_name)
         else:
-            print(f"No template found for client {client_id}, using default formatting")
+            print(f"No template found for client {client_id}, user {user_id}, using default formatting")
             doc = Document()
             
             add_styled_heading(doc, f"{drug_name} (marnetegragene autotemcel)", level=1)
@@ -464,28 +600,28 @@ def create_reformatted_docx(sections, output_path, drug_name="KRESLADI", client_
         raise
 
 @app.route('/')
-@auth.login_required
+@login_required
 def index():
-    ai_prompt = load_ai_prompt()
-    clients = get_clients()
+    ai_prompt = load_ai_prompt(user_id=current_user.id)
+    clients = get_clients(current_user.id)
     return render_template('index.html', ai_prompt=ai_prompt, clients=clients)
 
 @app.route('/load_client', methods=['POST'])
-@auth.login_required
+@login_required
 def load_client():
     try:
         data = request.form
         client_id = data.get('client_id')
         if not client_id:
             return jsonify({'error': 'Client ID cannot be empty'}), 400
-        prompt = load_ai_prompt(client_id)
+        prompt = load_ai_prompt(client_id, current_user.id)
         return jsonify({'prompt': prompt}), 200
     except Exception as e:
         print(f"Error loading client: {str(e)}")
         return jsonify({'error': 'Failed to load client'}), 500
 
 @app.route('/update_prompt', methods=['POST'])
-@auth.login_required
+@login_required
 def update_prompt():
     try:
         data = request.form
@@ -494,14 +630,14 @@ def update_prompt():
         client_id = data.get('client_id')
         if not new_prompt:
             return jsonify({'error': 'Prompt cannot be empty'}), 400
-        save_ai_prompt(new_prompt, client_id)
+        save_ai_prompt(new_prompt, client_id, current_user.id)
         return jsonify({'message': 'Prompt updated successfully'}), 200
     except Exception as e:
         print(f"Error updating prompt: {str(e)}")
         return jsonify({'error': 'Failed to update prompt'}), 500
 
 @app.route('/upload_template', methods=['POST'])
-@auth.login_required
+@login_required
 def upload_template():
     try:
         if 'template' not in request.files:
@@ -512,14 +648,14 @@ def upload_template():
         if not file.filename.endswith('.docx'):
             return jsonify({'error': 'Only .docx files are supported'}), 400
         client_id = request.form.get('client_id')
-        save_template(file, client_id)
+        save_template(file, client_id, current_user.id)
         return jsonify({'message': 'Template uploaded successfully'}), 200
     except Exception as e:
         print(f"Error uploading template: {str(e)}")
         return jsonify({'error': 'Failed to upload template'}), 500
 
 @app.route('/upload', methods=['POST'])
-@auth.login_required
+@login_required
 def upload_file():
     input_path = None
     output_path = None
@@ -538,14 +674,14 @@ def upload_file():
         file.save(input_path)
         
         content = extract_content_from_docx(input_path)
-        sections = call_ai_api(content, client_id)
+        sections = call_ai_api(content, client_id, current_user.id)
         if "error" in sections:
             print(f"AI processing failed: {sections['error']}")
             return f"AI API error: {sections['error']}", 500
         
         sections["references"] = content["references"]
         output_path = os.path.join(app.config['UPLOAD_FOLDER'], f"reformatted_{filename}")
-        create_reformatted_docx(sections, output_path, client_id=client_id)
+        create_reformatted_docx(sections, output_path, client_id=client_id, user_id=current_user.id)
         
         return send_file(output_path, as_attachment=True, download_name=f"reformatted_{filename}")
     except Exception as e:
