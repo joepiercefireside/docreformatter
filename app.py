@@ -724,7 +724,7 @@ def index():
                 session['selected_prompt'] = prompt_name
                 flash('Prompt updated successfully', 'success')
             else:
-                flash('Failed to update prompt', 'danger')
+                flash('Failed to update prompt: Missing prompt name or content', 'danger')
         
         elif action == 'create_prompt':
             new_prompt_name = request.form.get('new_prompt_name')
@@ -733,21 +733,21 @@ def index():
                 session['selected_prompt'] = new_prompt_name
                 flash(f'Created new prompt: {new_prompt_name}', 'success')
             else:
-                flash('Failed to create prompt', 'danger')
+                flash('Failed to create prompt: Missing prompt name', 'danger')
         
         elif action == 'upload_template':
             template_file = request.files.get('template_file')
             prompt_name = request.form.get('prompt_name')
-            if template_file and template_file.filename.endswith('.docx'):
+            if template_file and template_file.filename.endswith('.docx') and selected_client:
                 save_template(template_file, selected_client, current_user.id, prompt_name or selected_prompt)
                 flash('Template uploaded successfully', 'success')
             else:
-                flash('Invalid template file', 'danger')
+                flash('Invalid template file or missing client', 'danger')
         
         elif action == 'upload_document':
             document_file = request.files.get('document_file')
             prompt_name = request.form.get('prompt_name')
-            if document_file and document_file.filename.endswith('.docx') and prompt_name:
+            if document_file and document_file.filename.endswith('.docx') and prompt_name and selected_client:
                 filename = secure_filename(document_file.filename)
                 input_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
                 output_path = os.path.join(app.config['UPLOAD_FOLDER'], f"reformatted_{filename}")
@@ -764,17 +764,24 @@ def index():
                 os.remove(output_path)
                 return response
             else:
-                flash('Invalid document file or prompt', 'danger')
+                flash('Invalid document file, prompt, or missing client', 'danger')
+
+    # Handle GET with query parameter
+    client_id = request.args.get('client_id')
+    if client_id and client_id in clients:
+        session['selected_client'] = client_id
+        session.pop('selected_prompt', None)
+        selected_client = client_id
 
     # Load prompts for selected client
-    if selected_client:
+    if selected_client and selected_client in clients:
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute(
             "SELECT prompt_name, prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND client_id = %s AND prompt IS NOT NULL",
             (current_user.id, selected_client)
         )
-        prompts = [{'prompt_name': row[0], 'prompt_content': row[1]} for row in cur.fetchall()]
+        prompts = [{'prompt_name': row[0], 'prompt_content': row[1] or ''} for row in cur.fetchall()]
         cur.close()
         conn.close()
         print(f"Prompts for client {selected_client}: {prompts}")
@@ -785,6 +792,9 @@ def index():
                 selected_prompt = prompts[0]['prompt_name']
                 session['selected_prompt'] = selected_prompt
                 prompt_content = prompts[0]['prompt_content']
+        else:
+            selected_prompt = None
+            session.pop('selected_prompt', None)
 
     return render_template('index.html', 
                          clients=clients, 
