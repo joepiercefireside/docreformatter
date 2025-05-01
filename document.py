@@ -53,11 +53,13 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None):
         {"role": "system", "content": ai_prompt},
         {
             "role": "user",
-            "content": f"Input Text:\n{text}\n\nTables:\n{tables}\n\nOutput format:\n"
-                       "{\"summary\": \"...\", \"background\": \"...\", \"monograph\": \"...\", "
-                       "\"real_world\": \"\", \"enclosures\": \"...\", "
-                       "\"tables\": {\"section_name\": [[\"cell1\", \"cell2\"], [\"cell3\", \"cell4\"]]}, "
-                       "\"references\": [\"ref1\", \"ref2\", ...]}"
+            "content": (
+                f"Input Text:\n{text}\n\nTables:\n{tables}\n\nOutput format:\n"
+                "{\"summary\": \"...\", \"background\": \"...\", \"monograph\": \"...\", "
+                "\"real_world\": \"\", \"enclosures\": \"...\", "
+                "\"tables\": {\"section_name\": [[\"cell1\", \"cell2\"], [\"cell3\", \"cell4\"]]}, "
+                "\"references\": [\"ref1\", \"ref2\", ...]}"
+            )
         }
     ]
     payload = {
@@ -95,9 +97,7 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None):
                 "monograph": "",
                 "real_world": "",
                 "enclosures": "",
-                "tables
-
-": {},
+                "tables": {},
                 "references": content["references"]
             }
     except requests.exceptions.HTTPError as e:
@@ -171,7 +171,7 @@ def add_styled_table(doc, table_data, section_name):
                     tcBorders.append(border)
         return table
     except Exception as e:
-        print(f"Error adding styled table for {section_name}: {str(e)}")
+        print(f"Error adding styled table for section {section_name}: {str(e)}")
         raise
 
 def create_reformatted_docx(sections, output_path, drug_name="KRESLADI", client_id=None, user_id=None):
