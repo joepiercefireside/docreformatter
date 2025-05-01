@@ -14,6 +14,8 @@ from psycopg2.extras import Json
 from werkzeug.utils import secure_filename
 import bcrypt
 from authlib.integrations.flask_client import OAuth
+from flask import session
+import secrets
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = '/tmp'
@@ -155,16 +157,27 @@ def register():
 
 @app.route('/google_login')
 def google_login():
-    redirect_uri = 'https://diligentreformatter-cf11e263a6b8.herokuapp.com/google_auth'
-    return google.authorize_redirect(redirect_uri)
+    nonce = secrets.token_urlsafe(16)  # Generate a random nonce
+    session['nonce'] = nonce  # Store nonce in session
+    redirect_uri = url_for('google_auth', _external=True)
+    return google.authorize_redirect(redirect_uri, nonce=nonce)
 
 @app.route('/google_auth')
 def google_auth():
-    token = google.authorize_access_token()
-    user_info = google.parse_id_token(token)
-    google_id = user_info['sub']
-    email = user_info['email']
     try:
+        token = google.authorize_access_token()
+        if not token:
+            raise ValueError("No token received from Google")
+        nonce = session.pop('nonce', None)  # Retrieve and remove nonce
+        if not nonce:
+            raise ValueError("Nonce not found in session")
+        user_info = google.parse_id_token(token, nonce=nonce)
+        if not user_info:
+            raise ValueError("Failed to parse user info from token")
+        google_id = user_info.get('sub')
+        email = user_info.get('email')
+        if not google_id or not email:
+            raise ValueError(f"Missing user info: google_id={google_id}, email={email}")
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute("SELECT id, email FROM users WHERE google_id = %s OR email = %s", (google_id, email))
@@ -181,9 +194,10 @@ def google_auth():
         return redirect(url_for('index'))
     except Exception as e:
         print(f"Error during Google auth: {str(e)}")
-        flash('Google login failed')
+        import traceback
+        print(traceback.format_exc())
+        flash(f'Google login failed: {str(e)}')
         return redirect(url_for('login'))
-
 @app.route('/logout')
 @login_required
 def logout():
