@@ -1,0 +1,40 @@
+body {
+    background-color: #f8f9fa; /* Light grey background */
+    font-family: 'Arial', sans-serif;
+}
+
+.navbar {
+    background-color: #00689B !important; /* Custom blue */
+}
+
+.navbar-brand img {
+    margin-right: 10px;
+}
+
+.card {
+    border-radius: 8px; /* Rounded corners */
+    background-color: #ffffff; /* White background for contrast */
+    margin-bottom: 20px;
+}
+
+.card-body {
+    padding: 20px;
+}
+
+.form-control, .btn {
+    border-radius: 5px;
+}
+
+.alert {
+    border-radius: 5px;
+}
+
+h1.card-title {
+    color: #333;
+    font-weight: bold;
+}
+
+.card.border-light {
+    border: 1px solid #dee2e6;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
