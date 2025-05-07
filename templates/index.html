@@ -1,149 +1,80 @@
+<!DOCTYPE html>
 {% extends "base.html" %}
-{% block title %}Home - Diligent Doc Reformatter{% endblock %}
+{% block title %}Document Reformatter{% endblock %}
 {% block content %}
+<h1 class="mt-4">Document Reformatter</h1>
 <div class="row">
-    <div class="col-md-12">
-        <h1 class="mb-4">Welcome, {{ current_user.email }}</h1>
-    </div>
-</div>
-
-<!-- Client Selection -->
-<div class="row mb-4">
     <div class="col-md-6">
-        <div class="card">
-            <div class="card-header">
-                <i class="fas fa-users"></i> Select Client
+        <form method="POST" enctype="multipart/form-data">
+            <input type="hidden" name="action" value="select_client">
+            <div class="form-group">
+                <label for="client_id">Select Client:</label>
+                <select class="form-control" id="client_id" name="client_id" onchange="this.form.submit()">
+                    <option value="">Select a client</option>
+                    {% for client in clients %}
+                        <option value="{{ client }}" {% if client == selected_client %}selected{% endif %}>{{ client }}</option>
+                    {% endfor %}
+                </select>
             </div>
-            <div class="card-body">
-                <form method="GET" action="{{ url_for('index') }}">
-                    <div class="mb-3">
-                        <label for="clientSelect" class="form-label">Client</label>
-                        <select class="form-select text-dark" id="clientSelect" name="client_id" onchange="this.form.submit()">
-                            <option value="" {% if not selected_client %}selected{% endif %}>Select a client</option>
-                            {% for client in clients %}
-                                <option value="{{ client }}" {% if client == selected_client %}selected{% endif %} data-client-id="{{ client }}">
-                                    {{ client or 'Unnamed Client' }}
-                                </option>
-                            {% endfor %}
-                        </select>
-                    </div>
-                </form>
-            </div>
+        </form>
+        {% if selected_client %}
+            <form method="POST" enctype="multipart/form-data">
+                <input type="hidden" name="action" value="upload_document">
+                <div class="form-group">
+                    <label for="prompt_name">Select Prompt:</label>
+                    <select class="form-control" id="prompt_name" name="prompt_name" onchange="loadPromptContent()">
+                        <option value="">Select a prompt</option>
+                        {% for prompt in prompts %}
+                            <option value="{{ prompt.prompt_name }}" {% if prompt.prompt_name == selected_prompt %}selected{% endif %}>{{ prompt.prompt_name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="document_file">Upload Document (.docx):</label>
+                    <input type="file" class="form-control-file" id="document_file" name="document_file" accept=".docx" required>
+                </div>
+                <div class="form-group">
+                    <label for="template_file">Upload Template (.docx):</label>
+                    <input type="file" class="form-control-file" id="template_file" name="template_file" accept=".docx">
+                </div>
+                <button type="submit" class="btn btn-primary">Reformat Document</button>
+            </form>
+            <form method="POST" enctype="multipart/form-data" class="mt-3">
+                <input type="hidden" name="action" value="upload_template">
+                <div class="form-group">
+                    <label for="prompt_name_template">Prompt for Template:</label>
+                    <select class="form-control" id="prompt_name_template" name="prompt_name">
+                        <option value="">Select a prompt</option>
+                        {% for prompt in prompts %}
+                            <option value="{{ prompt.prompt_name }}">{{ prompt.prompt_name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="template_file_only">Upload Template Only (.docx):</label>
+                    <input type="file" class="form-control-file" id="template_file_only" name="template_file" accept=".docx" required>
+                </div>
+                <button type="submit" class="btn btn-secondary">Upload Template</button>
+            </form>
+        {% endif %}
+    </div>
+    <div class="col-md-6">
+        <h4>Prompt Content</h4>
+        <div class="form-group">
+            <label for="custom_prompt">Edit Prompt for This Conversion:</label>
+            <textarea class="form-control" id="custom_prompt" name="custom_prompt" rows="10">{{ prompt_content }}</textarea>
         </div>
     </div>
 </div>
-
-<!-- Prompt Selection -->
-{% if selected_client %}
-<div class="row mb-4">
-    <div class="col-md-6">
-        <div class="card">
-            <div class="card-header">
-                <i class="fas fa-edit"></i> Prompt Selection
-            </div>
-            <div class="card-body">
-                <form method="POST" action="{{ url_for('index') }}">
-                    <div class="mb-3">
-                        <label for="promptSelect" class="form-label">Prompt</label>
-                        <select class="form-select text-dark" id="promptSelect" name="prompt_name" onchange="this.form.submit()">
-                            <option value="" {% if not selected_prompt %}selected{% endif %}>Select a prompt</option>
-                            {% for prompt in prompts %}
-                                <option value="{{ prompt.prompt_name }}" {% if prompt.prompt_name == selected_prompt %}selected{% endif %}>
-                                    {{ prompt.prompt_name }}
-                                </option>
-                            {% endfor %}
-                        </select>
-                    </div>
-                    <div class="mb-3">
-                        <label for="promptContent" class="form-label">Prompt Content</label>
-                        <textarea class="form-control" id="promptContent" name="prompt_content" rows="5">{{ prompt_content }}</textarea>
-                    </div>
-                    <input type="hidden" name="action" value="update_prompt">
-                    <button type="submit" class="btn btn-primary">
-                        <i class="fas fa-save"></i> Update Prompt
-                    </button>
-                </form>
-                <form method="POST" action="{{ url_for('index') }}" class="mt-3">
-                    <div class="mb-3">
-                        <label for="newPromptName" class="form-label">New Prompt Name</label>
-                        <input type="text" class="form-control" id="newPromptName" name="new_prompt_name" placeholder="Enter new prompt name">
-                    </div>
-                    <input type="hidden" name="action" value="create_prompt">
-                    <button type="submit" class="btn btn-success">
-                        <i class="fas fa-plus"></i> Create New Prompt
-                    </button>
-                </form>
-            </div>
-        </div>
-    </div>
-</div>
-
-<!-- Template Upload -->
-<div class="row mb-4">
-    <div class="col-md-6">
-        <div class="card">
-            <div class="card-header">
-                <i class="fas fa-file-upload"></i> Upload Template
-            </div>
-            <div class="card-body">
-                <form method="POST" action="{{ url_for('index') }}" enctype="multipart/form-data">
-                    <div class="mb-3">
-                        <label for="promptSelectTemplate" class="form-label">Prompt for Template</label>
-                        <select class="form-select text-dark" id="promptSelectTemplate" name="prompt_name">
-                            <option value="" {% if not selected_prompt %}selected{% endif %}>Select a prompt</option>
-                            {% for prompt in prompts %}
-                                <option value="{{ prompt.prompt_name }}" {% if prompt.prompt_name == selected_prompt %}selected{% endif %}>
-                                    {{ prompt.prompt_name }}
-                                </option>
-                            {% endfor %}
-                        </select>
-                    </div>
-                    <div class="mb-3">
-                        <label for="templateFile" class="form-label">Template File (.docx)</label>
-                        <input type="file" class="form-control" id="templateFile" name="template_file" accept=".docx">
-                    </div>
-                    <input type="hidden" name="action" value="upload_template">
-                    <button type="submit" class="btn btn-primary">
-                        <i class="fas fa-upload"></i> Upload Template
-                    </button>
-                </form>
-            </div>
-        </div>
-    </div>
-</div>
-
-<!-- Document Upload -->
-<div class="row mb-4">
-    <div class="col-md-6">
-        <div class="card">
-            <div class="card-header">
-                <i class="fas fa-file-upload"></i> Upload Document
-            </div>
-            <div class="card-body">
-                <form method="POST" action="{{ url_for('index') }}" enctype="multipart/form-data">
-                    <div class="mb-3">
-                        <label for="promptSelectDocument" class="form-label">Prompt for Document</label>
-                        <select class="form-select text-dark" id="promptSelectDocument" name="prompt_name">
-                            <option value="" {% if not selected_prompt %}selected{% endif %}>Select a prompt</option>
-                            {% for prompt in prompts %}
-                                <option value="{{ prompt.prompt_name }}" {% if prompt.prompt_name == selected_prompt %}selected{% endif %}>
-                                    {{ prompt.prompt_name }}
-                                </option>
-                            {% endfor %}
-                        </select>
-                    </div>
-                    <div class="mb-3">
-                        <label for="documentFile" class="form-label">Document File (.docx)</label>
-                        <input type="file" class="form-control" id="documentFile" name="document_file" accept=".docx">
-                    </div>
-                    <input type="hidden" name="action" value="upload_document">
-                    <button type="submit" class="btn btn-primary">
-                        <i class="fas fa-upload"></i> Upload and Reformat
-                    </button>
-                </form>
-            </div>
-        </div>
-    </div>
-</div>
-{% endif %}
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/main.js') }}"></script>
+<script>
+$(document).ready(function() {
+    // Load prompt content on page load if a prompt is selected
+    if ($('#prompt_name').val()) {
+        loadPromptContent();
+    }
+});
+</script>
 {% endblock %}

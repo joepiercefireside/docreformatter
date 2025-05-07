@@ -1,0 +1,100 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+{% extends "base.html" %}
+{% block title %}Create Prompts{% endblock %}
+{% block content %}
+<h1 class="mt-4">Create/Edit Prompts</h1>
+<form method="GET" action="{{ url_for('create_prompt') }}">
+    <div class="form-group">
+        <label for="client_id">Select Client:</label>
+        <select class="form-control" id="client_id" name="client_id" onchange="this.form.submit()">
+            <option value="">Global (All Clients)</option>
+            {% for client in clients %}
+                <option value="{{ client }}" {% if client == selected_client %}selected{% endif %}>{{ client }}</option>
+            {% endfor %}
+        </select>
+    </div>
+</form>
+<h3>{% if selected_client %}Prompts for {{ selected_client }}{% else %}Global Prompts{% endif %}</h3>
+{% if prompts %}
+    <table class="table table-bordered">
+        <thead>
+            <tr>
+                <th>Prompt Name</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for prompt in prompts %}
+                <tr>
+                    <td>{{ prompt.prompt_name }}</td>
+                    <td>
+                        <button class="btn btn-sm btn-primary" onclick="editPrompt('{{ prompt.prompt_name }}', '{{ prompt.prompt_content | replace('\n', '\\n') | replace('"', '\\"') }}')">Edit</button>
+                    </td>
+                </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+{% else %}
+    <p>No prompts found for {% if selected_client %}{{ selected_client }}{% else %}global use{% endif %}.</p>
+{% endif %}
+<h3>{% if selected_prompt %}Edit Prompt{% else %}Create New Prompt{% endif %}</h3>
+<form method="POST">
+    <input type="hidden" name="action" value="{% if selected_prompt %}update{% else %}create{% endif %}">
+    <input type="hidden" name="client_id" value="{{ selected_client }}">
+    <div class="form-group">
+        <label for="prompt_name">Prompt Name:</label>
+        <input type="text" class="form-control" id="prompt_name" name="prompt_name" value="{{ selected_prompt or '' }}" required>
+    </div>
+    <div class="form-group">
+        <label for="prompt_content">Prompt Content:</label>
+        <textarea class="form-control" id="prompt_content" name="prompt_content" rows="10">{{ selected_prompt_content or '' }}</textarea>
+    </div>
+    <button type="submit" class="btn btn-primary">{% if selected_prompt %}Update Prompt{% else %}Create Prompt{% endif %}</button>
+</form>
+<script>
+function editPrompt(name, content) {
+    document.getElementById('prompt_name').value = name;
+    document.getElementById('prompt_content').value = content.replace(/\\n/g, '\n').replace(/\\"/g, '"');
+    document.querySelector('input[name="action"]').value = 'update';
+}
+</script>
+{% endblock %}

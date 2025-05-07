@@ -230,7 +230,7 @@ def create_client():
             conn = get_db_connection()
             cur = conn.cursor()
             cur.execute("SELECT id FROM settings WHERE user_id = %s AND client_id = %s AND prompt_name = %s", 
-                       (current_user.id, client_id, prompt_name))
+                        (current_user.id, client_id, prompt_name))
             if cur.fetchone():
                 flash('Client ID and prompt name combination already exists', 'danger')
                 cur.close()
@@ -253,24 +253,101 @@ def create_client():
             return redirect(url_for('create_client'))
     return render_template('create_client.html')
 
+# Prompt creation/editing route
+@app.route('/create_prompt', methods=['GET', 'POST'])
+@login_required
+def create_prompt():
+    clients = get_clients(current_user.id)
+    selected_client = request.args.get('client_id', '')
+    prompts = []
+    
+    if request.method == 'POST':
+        action = request.form.get('action')
+        client_id = request.form.get('client_id', '').strip()
+        prompt_name = request.form.get('prompt_name', '').strip()
+        prompt_content = request.form.get('prompt_content', '').strip()
+        
+        if action == 'create':
+            if not prompt_name:
+                flash('Prompt name cannot be empty', 'danger')
+                return redirect(url_for('create_prompt', client_id=client_id))
+            try:
+                conn = get_db_connection()
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT id FROM settings WHERE user_id = %s AND client_id = %s AND prompt_name = %s",
+                    (current_user.id, client_id, prompt_name)
+                )
+                if cur.fetchone():
+                    flash(f'Prompt "{prompt_name}" already exists for this client', 'danger')
+                    cur.close()
+                    conn.close()
+                    return redirect(url_for('create_prompt', client_id=client_id))
+                save_ai_prompt(prompt_content, client_id, current_user.id, prompt_name)
+                flash(f'Prompt "{prompt_name}" created successfully', 'success')
+                cur.close()
+                conn.close()
+                return redirect(url_for('create_prompt', client_id=client_id))
+            except Exception as e:
+                logger.error(f"Error creating prompt: {str(e)}")
+                flash(f'Failed to create prompt: {str(e)}', 'danger')
+                return redirect(url_for('create_prompt', client_id=client_id))
+        
+        elif action == 'update':
+            if not prompt_name:
+                flash('Prompt name cannot be empty', 'danger')
+                return redirect(url_for('create_prompt', client_id=client_id))
+            try:
+                save_ai_prompt(prompt_content, client_id, current_user.id, prompt_name)
+                flash(f'Prompt "{prompt_name}" updated successfully', 'success')
+                return redirect(url_for('create_prompt', client_id=client_id))
+            except Exception as e:
+                logger.error(f"Error updating prompt: {str(e)}")
+                flash(f'Failed to update prompt: {str(e)}', 'danger')
+                return redirect(url_for('create_prompt', client_id=client_id))
+    
+    # Load prompts for selected client or global
+    conn = get_db_connection()
+    cur = conn.cursor()
+    if selected_client:
+        cur.execute(
+            "SELECT prompt_name, prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND client_id = %s AND prompt IS NOT NULL",
+            (current_user.id, selected_client)
+        )
+    else:
+        cur.execute(
+            "SELECT prompt_name, prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND (client_id = '' OR client_id IS NULL) AND prompt IS NOT NULL",
+            (current_user.id,)
+        )
+    prompts = [{'prompt_name': row[0], 'prompt_content': row[1] or ''} for row in cur.fetchall()]
+    cur.close()
+    conn.close()
+    logger.info(f"Prompts for client {selected_client or 'global'}: {prompts}")
+    
+    return render_template('create_prompt.html', clients=clients, selected_client=selected_client, prompts=prompts)
+
 # Prompt management routes
 @app.route('/load_prompts', methods=['POST'])
 @login_required
 def load_prompts():
     try:
-        client_id = request.form.get('client_id')
-        if not client_id:
-            return jsonify({'error': 'Client ID cannot be empty'}), 400
+        client_id = request.form.get('client_id', '')
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute(
-            "SELECT prompt_name, prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND client_id = %s AND prompt IS NOT NULL",
-            (current_user.id, client_id)
-        )
-        prompts = [{'prompt_name': row[0], 'prompt_content': row[1]} for row in cur.fetchall()]
+        if client_id:
+            cur.execute(
+                "SELECT prompt_name, prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND client_id = %s AND prompt IS NOT NULL",
+                (current_user.id, client_id)
+            )
+        else:
+            cur.execute(
+                "SELECT prompt_name, prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND (client_id = '' OR client_id IS NULL) AND prompt IS NOT NULL",
+                (current_user.id,)
+            )
+        prompts = [{'prompt_name': row[0], 'prompt_content': row[1] or ''} for row in cur.fetchall()]
         cur.close()
         conn.close()
-        logger.info(f"Loaded prompts for client {client_id}: {prompts}")
+        logger.info(f"Loaded prompts for client {client_id or 'global'}: {prompts}")
         return jsonify({'prompts': prompts}), 200
     except Exception as e:
         logger.error(f"Error loading prompts: {str(e)}")
@@ -281,15 +358,112 @@ def load_prompts():
 def load_client():
     try:
         data = request.form
-        client_id = data.get('client_id')
+        client_id = data.get('client_id', '')
         prompt_name = data.get('prompt_name')
-        if not client_id:
-            return jsonify({'error': 'Client ID cannot be empty'}), 400
         prompt = load_ai_prompt(client_id, current_user.id, prompt_name)
         return jsonify({'prompt': prompt, 'prompt_name': prompt_name}), 200
     except Exception as e:
         logger.error(f"Error loading client: {str(e)}")
         return jsonify({'error': 'Failed to load client'}), 500
+
+# Main page route
+@app.route('/', methods=['GET', 'POST'])
+@login_required
+def index():
+    clients = get_clients(current_user.id)
+    logger.info(f"Clients for user {current_user.id}: {clients}")
+    
+    selected_client = session.get('selected_client')
+    selected_prompt = session.get('selected_prompt')
+    prompt_content = ""
+    prompts = []
+
+    if request.method == 'POST':
+        action = request.form.get('action')
+        client_id = request.form.get('client_id')
+        
+        if action == 'select_client' and client_id in clients:
+            session['selected_client'] = client_id
+            session.pop('selected_prompt', None)
+            selected_client = client_id
+            flash(f'Selected client: {client_id}', 'success')
+        
+        elif action == 'upload_document':
+            document_file = request.files.get('document_file')
+            prompt_name = request.form.get('prompt_name')
+            custom_prompt = request.form.get('custom_prompt', '').strip()
+            if document_file and document_file.filename.endswith('.docx') and prompt_name and selected_client:
+                filename = secure_filename(document_file.filename)
+                input_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+                output_path = os.path.join(app.config['UPLOAD_FOLDER'], f"reformatted_{filename}")
+                document_file.save(input_path)
+                content = extract_content_from_docx(input_path)
+                # Use custom_prompt if provided, else load from database
+                ai_prompt = custom_prompt if custom_prompt else load_ai_prompt(selected_client, current_user.id, prompt_name)
+                sections = call_ai_api(content, selected_client, current_user.id, prompt_name, custom_prompt=ai_prompt)
+                if "error" in sections:
+                    flash(f"AI processing failed: {sections['error']}", 'danger')
+                    return redirect(url_for('index'))
+                sections["references"] = content["references"]
+                create_reformatted_docx(sections, output_path, client_id=selected_client, user_id=current_user.id)
+                response = send_file(output_path, as_attachment=True, download_name=f"reformatted_{filename}")
+                os.remove(input_path)
+                os.remove(output_path)
+                return response
+            else:
+                flash('Invalid document file, prompt, or missing client', 'danger')
+        
+        elif action == 'upload_template':
+            template_file = request.files.get('template_file')
+            prompt_name = request.form.get('prompt_name')
+            if template_file and template_file.filename.endswith('.docx') and selected_client and prompt_name:
+                save_template(template_file, selected_client, current_user.id, prompt_name)
+                flash('Template uploaded successfully', 'success')
+            else:
+                flash('Invalid template file, missing prompt, or missing client', 'danger')
+
+    # Handle GET with query parameter
+    client_id = request.args.get('client_id')
+    if client_id and client_id in clients:
+        session['selected_client'] = client_id
+        session.pop('selected_prompt', None)
+        selected_client = client_id
+
+    # Load prompts for selected client or global
+    if selected_client:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        # Include global prompts (client_id = '' or NULL)
+        cur.execute(
+            """
+            SELECT prompt_name, prompt->'prompt' AS prompt_content 
+            FROM settings 
+            WHERE user_id = %s AND (client_id = %s OR client_id = '' OR client_id IS NULL) 
+            AND prompt IS NOT NULL
+            """,
+            (current_user.id, selected_client)
+        )
+        prompts = [{'prompt_name': row[0], 'prompt_content': row[1] or ''} for row in cur.fetchall()]
+        cur.close()
+        conn.close()
+        logger.info(f"Prompts for client {selected_client}: {prompts}")
+        if prompts:
+            if selected_prompt and any(p['prompt_name'] == selected_prompt for p in prompts):
+                prompt_content = next(p['prompt_content'] for p in prompts if p['prompt_name'] == selected_prompt)
+            else:
+                selected_prompt = prompts[0]['prompt_name']
+                session['selected_prompt'] = selected_prompt
+                prompt_content = prompts[0]['prompt_content']
+        else:
+            selected_prompt = None
+            session.pop('selected_prompt', None)
+
+    return render_template('index.html', 
+                         clients=clients, 
+                         selected_client=selected_client, 
+                         prompts=prompts, 
+                         selected_prompt=selected_prompt, 
+                         prompt_content=prompt_content)
 
 # Existing functionality
 AI_API_URL = os.environ.get('AI_API_URL', 'https://api.openai.com/v1/chat/completions')
@@ -320,7 +494,7 @@ def load_ai_prompt(client_id=None, user_id=None, prompt_name=None):
             )
         else:
             cur.execute(
-                "SELECT prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND prompt IS NOT NULL ORDER BY created_at DESC LIMIT 1",
+                "SELECT prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND (client_id = '' OR client_id IS NULL) AND prompt IS NOT NULL ORDER BY created_at DESC LIMIT 1",
                 (user_id,)
             )
         result = cur.fetchone()
@@ -331,10 +505,12 @@ def load_ai_prompt(client_id=None, user_id=None, prompt_name=None):
         logger.error(f"Error loading AI prompt: {str(e)}")
         return DEFAULT_AI_PROMPT
 
-def save_ai_prompt(prompt, client_id=None, user_id=None, prompt_name=None):
+def save_ai_prompt(prompt, client_id, user_id, prompt_name):
     try:
-        if not client_id or not prompt_name:
-            raise ValueError(f"Missing client_id or prompt_name: client_id={client_id}, prompt_name={prompt_name}")
+        if not prompt_name:
+            raise ValueError(f"Prompt name cannot be empty: prompt_name={prompt_name}")
+        # Use empty string for global prompts
+        client_id = client_id or ''
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute(
@@ -344,15 +520,16 @@ def save_ai_prompt(prompt, client_id=None, user_id=None, prompt_name=None):
         conn.commit()
         cur.close()
         conn.close()
-        logger.info(f"Saved AI prompt '{prompt_name}' for client {client_id}, user {user_id}: {prompt[:100]}...")
+        logger.info(f"Saved AI prompt '{prompt_name}' for client {client_id or 'global'}, user {user_id}: {prompt[:100]}...")
     except Exception as e:
         logger.error(f"Error saving AI prompt: {str(e)}")
         raise
 
-def save_template(file, client_id=None, user_id=None, prompt_name=None):
+def save_template(file, client_id, user_id, prompt_name):
     try:
-        if not client_id or not prompt_name:
-            raise ValueError(f"Missing client_id or prompt_name: client_id={client_id}, prompt_name={prompt_name}")
+        if not prompt_name:
+            raise ValueError(f"Prompt name cannot be empty: prompt_name={prompt_name}")
+        client_id = client_id or ''
         file_data = file.read()
         conn = get_db_connection()
         cur = conn.cursor()
@@ -363,7 +540,7 @@ def save_template(file, client_id=None, user_id=None, prompt_name=None):
         conn.commit()
         cur.close()
         conn.close()
-        logger.info(f"Saved template for client {client_id}, user {user_id}, prompt {prompt_name}")
+        logger.info(f"Saved template for client {client_id or 'global'}, user {user_id}, prompt {prompt_name}")
     except Exception as e:
         logger.error(f"Error saving template: {str(e)}")
         raise
@@ -384,7 +561,7 @@ def load_template(output_path, client_id=None, user_id=None, prompt_name=None):
             )
         else:
             cur.execute(
-                "SELECT template FROM settings WHERE user_id = %s AND template IS NOT NULL ORDER BY created_at DESC LIMIT 1",
+                "SELECT template FROM settings WHERE user_id = %s AND (client_id = '' OR client_id IS NULL) AND template IS NOT NULL ORDER BY created_at DESC LIMIT 1",
                 (user_id,)
             )
         result = cur.fetchone()
@@ -445,14 +622,14 @@ def extract_content_from_docx(file_path):
         logger.error(f"Error extracting content from docx: {str(e)}")
         raise
 
-def call_ai_api(content, client_id=None, user_id=None, prompt_name=None):
+def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_prompt=None):
     headers = {
         "Authorization": f"Bearer {API_KEY}",
         "Content-Type": "application/json"
     }
     text = "\n".join(content["text"])
     tables = json.dumps(content["tables"])
-    ai_prompt = load_ai_prompt(client_id, user_id, prompt_name)
+    ai_prompt = custom_prompt if custom_prompt else load_ai_prompt(client_id, user_id, prompt_name)
     messages = [
         {"role": "system", "content": ai_prompt},
         {
@@ -701,154 +878,6 @@ def create_reformatted_docx(sections, output_path, drug_name="KRESLADI", client_
         logger.error(f"Error creating reformatted docx: {str(e)}")
         raise
 
-@app.route('/', methods=['GET', 'POST'])
-@login_required
-def index():
-    clients = get_clients(current_user.id)
-    logger.info(f"Clients for user {current_user.id}: {clients}")
-    
-    # Handle client selection
-    selected_client = session.get('selected_client')
-    selected_prompt = session.get('selected_prompt')
-    prompt_content = ""
-    prompts = []
-
-    if request.method == 'POST':
-        action = request.form.get('action')
-        client_id = request.form.get('client_id')
-        
-        if action == 'select_client' and client_id in clients:
-            session['selected_client'] = client_id
-            session.pop('selected_prompt', None)
-            selected_client = client_id
-            flash(f'Selected client: {client_id}', 'success')
-        
-        elif action == 'update_prompt':
-            prompt_name = request.form.get('prompt_name')
-            prompt_content = request.form.get('prompt_content')
-            if prompt_name and prompt_content and selected_client:
-                save_ai_prompt(prompt_content, selected_client, current_user.id, prompt_name)
-                session['selected_prompt'] = prompt_name
-                flash('Prompt updated successfully', 'success')
-            else:
-                flash('Failed to update prompt: Missing prompt name or content', 'danger')
-        
-        elif action == 'create_prompt':
-            new_prompt_name = request.form.get('new_prompt_name')
-            if new_prompt_name and selected_client:
-                save_ai_prompt('', selected_client, current_user.id, new_prompt_name)
-                session['selected_prompt'] = new_prompt_name
-                flash(f'Created new prompt: {new_prompt_name}', 'success')
-            else:
-                flash('Failed to create prompt: Missing prompt name', 'danger')
-        
-        elif action == 'upload_template':
-            template_file = request.files.get('template_file')
-            prompt_name = request.form.get('prompt_name')
-            if template_file and template_file.filename.endswith('.docx') and selected_client and prompt_name:
-                save_template(template_file, selected_client, current_user.id, prompt_name)
-                flash('Template uploaded successfully', 'success')
-            else:
-                flash('Invalid template file, missing prompt, or missing client', 'danger')
-        
-        elif action == 'upload_document':
-            document_file = request.files.get('document_file')
-            prompt_name = request.form.get('prompt_name')
-            if document_file and document_file.filename.endswith('.docx') and prompt_name and selected_client:
-                filename = secure_filename(document_file.filename)
-                input_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-                output_path = os.path.join(app.config['UPLOAD_FOLDER'], f"reformatted_{filename}")
-                document_file.save(input_path)
-                content = extract_content_from_docx(input_path)
-                sections = call_ai_api(content, selected_client, current_user.id, prompt_name)
-                if "error" in sections:
-                    flash(f"AI processing failed: {sections['error']}", 'danger')
-                    return redirect(url_for('index'))
-                sections["references"] = content["references"]
-                create_reformatted_docx(sections, output_path, client_id=selected_client, user_id=current_user.id)
-                response = send_file(output_path, as_attachment=True, download_name=f"reformatted_{filename}")
-                os.remove(input_path)
-                os.remove(output_path)
-                return response
-            else:
-                flash('Invalid document file, prompt, or missing client', 'danger')
-
-    # Handle GET with query parameter
-    client_id = request.args.get('client_id')
-    if client_id and client_id in clients:
-        session['selected_client'] = client_id
-        session.pop('selected_prompt', None)
-        selected_client = client_id
-
-    # Load prompts for selected client
-    if selected_client and selected_client in clients:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT prompt_name, prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND client_id = %s AND prompt IS NOT NULL",
-            (current_user.id, selected_client)
-        )
-        prompts = [{'prompt_name': row[0], 'prompt_content': row[1] or ''} for row in cur.fetchall()]
-        cur.close()
-        conn.close()
-        logger.info(f"Prompts for client {selected_client}: {prompts}")
-        if prompts:
-            if selected_prompt and any(p['prompt_name'] == selected_prompt for p in prompts):
-                prompt_content = next(p['prompt_content'] for p in prompts if p['prompt_name'] == selected_prompt)
-            else:
-                selected_prompt = prompts[0]['prompt_name']
-                session['selected_prompt'] = selected_prompt
-                prompt_content = prompts[0]['prompt_content']
-        else:
-            selected_prompt = None
-            session.pop('selected_prompt', None)
-
-    return render_template('index.html', 
-                         clients=clients, 
-                         selected_client=selected_client, 
-                         prompts=prompts, 
-                         selected_prompt=selected_prompt, 
-                         prompt_content=prompt_content)
-
-@app.route('/update_prompt', methods=['POST'])
-@login_required
-def update_prompt():
-    try:
-        data = request.form
-        logger.info(f"Form data: {dict(data)}")
-        new_prompt = data.get('prompt', '').strip()
-        client_id = data.get('client_id')
-        prompt_name = data.get('prompt_name', 'Default Prompt').strip()
-        if not new_prompt:
-            return jsonify({'error': 'Prompt cannot be empty'}), 400
-        if not prompt_name:
-            return jsonify({'error': 'Prompt name cannot be empty'}), 400
-        save_ai_prompt(new_prompt, client_id, current_user.id, prompt_name)
-        session['selected_prompt'] = prompt_name
-        return jsonify({'message': 'Prompt updated successfully'}), 200
-    except Exception as e:
-        logger.error(f"Error updating prompt: {str(e)}")
-        return jsonify({'error': 'Failed to update prompt'}), 500
-
-@app.route('/upload_template', methods=['POST'])
-@login_required
-def upload_template():
-    try:
-        if 'template' not in request.files:
-            return jsonify({'error': 'No template file uploaded'}), 400
-        file = request.files['template']
-        if file.filename == '':
-            return jsonify({'error': 'No template file selected'}), 400
-        if not file.filename.endswith('.docx'):
-            return jsonify({'error': 'Only .docx files are supported'}), 400
-        client_id = request.form.get('client_id')
-        prompt_name = request.form.get('prompt_name', 'Default Prompt')
-        save_template(file, client_id, current_user.id, prompt_name)
-        return jsonify({'message': 'Template uploaded successfully'}), 200
-    except Exception as e:
-        logger.error(f"Error uploading template: {str(e)}")
-        return jsonify({'error': 'Failed to upload template'}), 500
-
 @app.route('/upload', methods=['POST'])
 @login_required
 def upload_file():
@@ -864,11 +893,13 @@ def upload_file():
             return "Only .docx files are supported", 400
         client_id = request.form.get('client_id')
         prompt_name = request.form.get('prompt_name')
+        custom_prompt = request.form.get('custom_prompt', '')
         filename = secure_filename(file.filename)
         input_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(input_path)
         content = extract_content_from_docx(input_path)
-        sections = call_ai_api(content, client_id, current_user.id, prompt_name)
+        ai_prompt = custom_prompt if custom_prompt else load_ai_prompt(client_id, current_user.id, prompt_name)
+        sections = call_ai_api(content, client_id, current_user.id, prompt_name, custom_prompt=ai_prompt)
         if "error" in sections:
             logger.error(f"AI processing failed: {sections['error']}")
             return f"AI API error: {sections['error']}", 500
