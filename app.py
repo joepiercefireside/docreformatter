@@ -15,6 +15,7 @@ from werkzeug.utils import secure_filename
 import bcrypt
 from authlib.integrations.flask_client import OAuth
 import secrets
+import logging
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = '/tmp'
@@ -23,6 +24,10 @@ app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'your-secret-key')
 app.config['GOOGLE_CLIENT_ID'] = os.environ.get('GOOGLE_CLIENT_ID')
 app.config['GOOGLE_CLIENT_SECRET'] = os.environ.get('GOOGLE_CLIENT_SECRET')
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL')
+
+# Logging setup
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Flask-Login setup
 login_manager = LoginManager()
@@ -65,16 +70,16 @@ def init_db():
                 prompt_name VARCHAR(255) NOT NULL,
                 template BYTEA,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE (user_id, client_id, prompt_name)
+                CONSTRAINT settings_unique_user_client_prompt UNIQUE (user_id, client_id, prompt_name)
             );
             CREATE INDEX IF NOT EXISTS idx_client_id ON settings(client_id);
         """)
         conn.commit()
         cur.close()
         conn.close()
-        print("Initialized database schema")
+        logger.info("Initialized database schema")
     except Exception as e:
-        print(f"Error initializing database: {str(e)}")
+        logger.error(f"Error initializing database: {str(e)}")
         raise
 
 with app.app_context():
@@ -100,7 +105,7 @@ def load_user(user_id):
             return User(user[0], user[1], user[2])
         return None
     except Exception as e:
-        print(f"Error loading user: {str(e)}")
+        logger.error(f"Error loading user: {str(e)}")
         return None
 
 # Authentication routes
@@ -123,7 +128,7 @@ def login():
                 return redirect(url_for('index'))
             flash('Invalid email or password', 'danger')
         except Exception as e:
-            print(f"Error during login: {str(e)}")
+            logger.error(f"Error during login: {str(e)}")
             flash('Login failed', 'danger')
     return render_template('login.html')
 
@@ -152,7 +157,7 @@ def register():
             login_user(User(user_id, email))
             return redirect(url_for('index'))
         except Exception as e:
-            print(f"Error during registration: {str(e)}")
+            logger.error(f"Error during registration: {str(e)}")
             flash('Registration failed', 'danger')
     return render_template('register.html')
 
@@ -194,9 +199,7 @@ def google_auth():
         conn.close()
         return redirect(url_for('index'))
     except Exception as e:
-        print(f"Error during Google auth: {str(e)}")
-        import traceback
-        print(traceback.format_exc())
+        logger.error(f"Error during Google auth: {str(e)}")
         flash(f'Google login failed: {str(e)}', 'danger')
         return redirect(url_for('login'))
 
@@ -245,7 +248,7 @@ def create_client():
             flash(f'Client {client_id} created successfully', 'success')
             return redirect(url_for('index'))
         except Exception as e:
-            print(f"Error creating client: {str(e)}")
+            logger.error(f"Error creating client: {str(e)}")
             flash('Failed to create client', 'danger')
             return redirect(url_for('create_client'))
     return render_template('create_client.html')
@@ -267,10 +270,10 @@ def load_prompts():
         prompts = [{'prompt_name': row[0], 'prompt_content': row[1]} for row in cur.fetchall()]
         cur.close()
         conn.close()
-        print(f"Loaded prompts for client {client_id}: {prompts}")
+        logger.info(f"Loaded prompts for client {client_id}: {prompts}")
         return jsonify({'prompts': prompts}), 200
     except Exception as e:
-        print(f"Error loading prompts: {str(e)}")
+        logger.error(f"Error loading prompts: {str(e)}")
         return jsonify({'error': 'Failed to load prompts'}), 500
 
 @app.route('/load_client', methods=['POST'])
@@ -285,7 +288,7 @@ def load_client():
         prompt = load_ai_prompt(client_id, current_user.id, prompt_name)
         return jsonify({'prompt': prompt, 'prompt_name': prompt_name}), 200
     except Exception as e:
-        print(f"Error loading client: {str(e)}")
+        logger.error(f"Error loading client: {str(e)}")
         return jsonify({'error': 'Failed to load client'}), 500
 
 # Existing functionality
@@ -325,40 +328,44 @@ def load_ai_prompt(client_id=None, user_id=None, prompt_name=None):
         conn.close()
         return result[0] if result and result[0] else DEFAULT_AI_PROMPT
     except Exception as e:
-        print(f"Error loading AI prompt: {str(e)}")
+        logger.error(f"Error loading AI prompt: {str(e)}")
         return DEFAULT_AI_PROMPT
 
 def save_ai_prompt(prompt, client_id=None, user_id=None, prompt_name=None):
     try:
+        if not client_id or not prompt_name:
+            raise ValueError(f"Missing client_id or prompt_name: client_id={client_id}, prompt_name={prompt_name}")
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO settings (user_id, client_id, prompt, prompt_name) VALUES (%s, %s, %s, %s) ON CONFLICT (user_id, client_id, prompt_name) DO UPDATE SET prompt = EXCLUDED.prompt",
-            (user_id, client_id, Json({'prompt': prompt}), prompt_name or 'Default Prompt')
+            "INSERT INTO settings (user_id, client_id, prompt, prompt_name) VALUES (%s, %s, %s, %s) ON CONFLICT ON CONSTRAINT settings_unique_user_client_prompt DO UPDATE SET prompt = EXCLUDED.prompt",
+            (user_id, client_id, Json({'prompt': prompt}), prompt_name)
         )
         conn.commit()
         cur.close()
         conn.close()
-        print(f"Saved AI prompt '{prompt_name}' for client {client_id}, user {user_id}: {prompt[:100]}...")
+        logger.info(f"Saved AI prompt '{prompt_name}' for client {client_id}, user {user_id}: {prompt[:100]}...")
     except Exception as e:
-        print(f"Error saving AI prompt: {str(e)}")
+        logger.error(f"Error saving AI prompt: {str(e)}")
         raise
 
 def save_template(file, client_id=None, user_id=None, prompt_name=None):
     try:
+        if not client_id or not prompt_name:
+            raise ValueError(f"Missing client_id or prompt_name: client_id={client_id}, prompt_name={prompt_name}")
         file_data = file.read()
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO settings (user_id, client_id, template, prompt_name) VALUES (%s, %s, %s, %s) ON CONFLICT (user_id, client_id, prompt_name) DO UPDATE SET template = EXCLUDED.template",
-            (user_id, client_id, file_data, prompt_name or 'Default Prompt')
+            "INSERT INTO settings (user_id, client_id, template, prompt_name) VALUES (%s, %s, %s, %s) ON CONFLICT ON CONSTRAINT settings_unique_user_client_prompt DO UPDATE SET template = EXCLUDED.template",
+            (user_id, client_id, file_data, prompt_name)
         )
         conn.commit()
         cur.close()
         conn.close()
-        print(f"Saved template for client {client_id}, user {user_id}, prompt {prompt_name}")
+        logger.info(f"Saved template for client {client_id}, user {user_id}, prompt {prompt_name}")
     except Exception as e:
-        print(f"Error saving template: {str(e)}")
+        logger.error(f"Error saving template: {str(e)}")
         raise
 
 def load_template(output_path, client_id=None, user_id=None, prompt_name=None):
@@ -389,7 +396,7 @@ def load_template(output_path, client_id=None, user_id=None, prompt_name=None):
             return True
         return False
     except Exception as e:
-        print(f"Error loading template: {str(e)}")
+        logger.error(f"Error loading template: {str(e)}")
         return False
 
 def get_clients(user_id):
@@ -403,10 +410,10 @@ def get_clients(user_id):
         clients = [row[0] for row in cur.fetchall()]
         cur.close()
         conn.close()
-        print(f"Fetched clients for user {user_id}: {clients}")
+        logger.info(f"Fetched clients for user {user_id}: {clients}")
         return clients
     except Exception as e:
-        print(f"Error getting clients: {str(e)}")
+        logger.error(f"Error getting clients: {str(e)}")
         return []
 
 def extract_content_from_docx(file_path):
@@ -431,11 +438,11 @@ def extract_content_from_docx(file_path):
                 if row_data:
                     table_data.append(row_data)
             if table_data:
-                print(f"Extracted table: {table_data}")
+                logger.info(f"Extracted table: {table_data}")
                 content["tables"].append(table_data)
         return content
     except Exception as e:
-        print(f"Error extracting content from docx: {str(e)}")
+        logger.error(f"Error extracting content from docx: {str(e)}")
         raise
 
 def call_ai_api(content, client_id=None, user_id=None, prompt_name=None):
@@ -468,7 +475,7 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None):
         response.raise_for_status()
         data = response.json()
         raw_content = data["choices"][0]["message"]["content"]
-        print(f"Raw AI response: {raw_content[:1000]}...")
+        logger.info(f"Raw AI response: {raw_content[:1000]}...")
         try:
             parsed_content = json.loads(raw_content)
             if not isinstance(parsed_content, dict):
@@ -479,12 +486,12 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None):
                         table_data = table_data[0]
                     parsed_content["tables"][section_name] = table_data
                     if not all(isinstance(row, list) for row in table_data):
-                        print(f"Invalid table data for {section_name}: {table_data}")
+                        logger.warning(f"Invalid table data for {section_name}: {table_data}")
                         parsed_content["tables"][section_name] = []
-            print(f"Parsed AI response: {parsed_content}")
+            logger.info(f"Parsed AI response: {parsed_content}")
             return parsed_content
         except json.JSONDecodeError as e:
-            print(f"JSON validation error: {str(e)}")
+            logger.error(f"JSON validation error: {str(e)}")
             return {
                 "error": f"Invalid JSON from AI: {str(e)}",
                 "summary": "Unable to categorize due to AI response error",
@@ -497,10 +504,10 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None):
             }
     except requests.exceptions.HTTPError as e:
         error_response = response.json() if response else {"error": str(e)}
-        print(f"API Error: {response.status_code} - {error_response}")
+        logger.error(f"API Error: {response.status_code} - {error_response}")
         return {"error": f"HTTP Error: {str(e)} - {error_response}"}
     except Exception as e:
-        print(f"Unexpected Error: {str(e)}")
+        logger.error(f"Unexpected Error: {str(e)}")
         return {"error": str(e)}
 
 def add_styled_heading(doc, text, level=1):
@@ -513,7 +520,7 @@ def add_styled_heading(doc, text, level=1):
         run.font.size = Pt(14)
         return para
     except Exception as e:
-        print(f"Error adding styled heading: {str(e)}")
+        logger.error(f"Error adding styled heading: {str(e)}")
         raise
 
 def add_styled_text(doc, text, bullet=False):
@@ -524,23 +531,23 @@ def add_styled_text(doc, text, bullet=False):
         run.font.size = Pt(12)
         return para
     except Exception as e:
-        print(f"Error adding styled text: {str(e)}")
+        logger.error(f"Error adding styled text: {str(e)}")
         raise
 
 def add_styled_table(doc, table_data, section_name):
     try:
         if not table_data or not table_data[0] or not any(cell for row in table_data for cell in row):
-            print(f"Skipping invalid or empty table for section: {section_name}")
+            logger.warning(f"Skipping invalid or empty table for section: {section_name}")
             return None
         max_cols = max(len(row) for row in table_data)
         table_data = [row + [""] * (max_cols - len(row)) for row in table_data]
-        print(f"Adding table for {section_name}: {table_data}")
+        logger.info(f"Adding table for {section_name}: {table_data}")
         table = doc.add_table(rows=len(table_data), cols=max_cols)
         table.alignment = WD_TABLE_ALIGNMENT.CENTER
         table.autofit = True
         for i, row_data in enumerate(table_data):
             row = table.rows[i]
-            print(f"Processing row {i}: {row_data}")
+            logger.debug(f"Processing row {i}: {row_data}")
             for j, cell_text in enumerate(row_data):
                 cell = row.cells[j]
                 cell.text = cell_text or ""
@@ -551,7 +558,7 @@ def add_styled_table(doc, table_data, section_name):
                         run.font.size = Pt(10)
         for i, row in enumerate(table.rows):
             for j, cell in enumerate(row.cells):
-                print(f"Setting borders for cell at row {i}, col {j}")
+                logger.debug(f"Setting borders for cell at row {i}, col {j}")
                 tcPr = cell._tc.get_or_add_tcPr()
                 tcBorders = tcPr.first_child_found_in("w:tcBorders")
                 if not tcBorders:
@@ -566,7 +573,7 @@ def add_styled_table(doc, table_data, section_name):
                     tcBorders.append(border)
         return table
     except Exception as e:
-        print(f"Error adding styled table for {section_name}: {str(e)}")
+        logger.error(f"Error adding styled table for {section_name}: {str(e)}")
         raise
 
 def create_reformatted_docx(sections, output_path, drug_name="KRESLADI", client_id=None, user_id=None):
@@ -583,7 +590,7 @@ def create_reformatted_docx(sections, output_path, drug_name="KRESLADI", client_
         sections = {**default_sections, **sections}
         template_path = os.path.join(app.config['UPLOAD_FOLDER'], 'temp_template.docx')
         if load_template(template_path, client_id, user_id):
-            print(f"Using template for client {client_id}, user {user_id}: {template_path}")
+            logger.info(f"Using template for client {client_id}, user {user_id}: {template_path}")
             doc = Document(template_path)
             def replace_placeholder(paragraph, placeholder, content, preserve_style=True):
                 if placeholder.lower() in paragraph.text.lower():
@@ -601,7 +608,7 @@ def create_reformatted_docx(sections, output_path, drug_name="KRESLADI", client_
             def add_table_after_placeholder(doc, placeholder, table_data, section_name):
                 for i, para in enumerate(doc.paragraphs):
                     if placeholder.lower() in para.text.lower():
-                        print(f"Adding table for {section_name} after placeholder: {placeholder}")
+                        logger.info(f"Adding table for {section_name} after placeholder: {placeholder}")
                         max_cols = max(len(row) for row in table_data)
                         table_data = [row + [""] * (max_cols - len(row)) for row in table_data]
                         table = doc.add_table(rows=len(table_data), cols=max_cols)
@@ -651,11 +658,11 @@ def create_reformatted_docx(sections, output_path, drug_name="KRESLADI", client_
                     replace_placeholder(para, "references", "\n".join([f"{i}. {ref}" for i, ref in enumerate(sections["references"], 1)]))
             for section_name, table_data in sections["tables"].items():
                 if not add_table_after_placeholder(doc, section_name, table_data, section_name):
-                    print(f"No placeholder found for table: {section_name}, appending at end")
+                    logger.info(f"No placeholder found for table: {section_name}, appending at end")
                     para = doc.add_paragraph(section_name)
                     add_styled_table(doc, table_data, section_name)
         else:
-            print(f"No template found for client {client_id}, user {user_id}, using default formatting")
+            logger.info(f"No template found for client {client_id}, user {user_id}, using default formatting")
             doc = Document()
             add_styled_heading(doc, f"{drug_name} (marnetegragene autotemcel)", level=1)
             add_styled_heading(doc, "Summary", level=1)
@@ -675,7 +682,7 @@ def create_reformatted_docx(sections, output_path, drug_name="KRESLADI", client_
                 for line in sections["real_world"].split("\n"):
                     if line.strip():
                         add_styled_text(doc, line)
-            print(f"Processing tables: {sections['tables']}")
+            logger.info(f"Processing tables: {sections['tables']}")
             for section_name, table_data in sections["tables"].items():
                 add_styled_heading(doc, section_name, level=2)
                 add_styled_table(doc, table_data, section_name)
@@ -691,14 +698,14 @@ def create_reformatted_docx(sections, output_path, drug_name="KRESLADI", client_
                 add_styled_text(doc, f"{i}. {ref}", bullet=False)
         doc.save(output_path)
     except Exception as e:
-        print(f"Error creating reformatted docx: {str(e)}")
+        logger.error(f"Error creating reformatted docx: {str(e)}")
         raise
 
 @app.route('/', methods=['GET', 'POST'])
 @login_required
 def index():
     clients = get_clients(current_user.id)
-    print(f"Clients for user {current_user.id}: {clients}")
+    logger.info(f"Clients for user {current_user.id}: {clients}")
     
     # Handle client selection
     selected_client = session.get('selected_client')
@@ -738,11 +745,11 @@ def index():
         elif action == 'upload_template':
             template_file = request.files.get('template_file')
             prompt_name = request.form.get('prompt_name')
-            if template_file and template_file.filename.endswith('.docx') and selected_client:
-                save_template(template_file, selected_client, current_user.id, prompt_name or selected_prompt)
+            if template_file and template_file.filename.endswith('.docx') and selected_client and prompt_name:
+                save_template(template_file, selected_client, current_user.id, prompt_name)
                 flash('Template uploaded successfully', 'success')
             else:
-                flash('Invalid template file or missing client', 'danger')
+                flash('Invalid template file, missing prompt, or missing client', 'danger')
         
         elif action == 'upload_document':
             document_file = request.files.get('document_file')
@@ -784,7 +791,7 @@ def index():
         prompts = [{'prompt_name': row[0], 'prompt_content': row[1] or ''} for row in cur.fetchall()]
         cur.close()
         conn.close()
-        print(f"Prompts for client {selected_client}: {prompts}")
+        logger.info(f"Prompts for client {selected_client}: {prompts}")
         if prompts:
             if selected_prompt and any(p['prompt_name'] == selected_prompt for p in prompts):
                 prompt_content = next(p['prompt_content'] for p in prompts if p['prompt_name'] == selected_prompt)
@@ -808,7 +815,7 @@ def index():
 def update_prompt():
     try:
         data = request.form
-        print(f"Form data: {dict(data)}")
+        logger.info(f"Form data: {dict(data)}")
         new_prompt = data.get('prompt', '').strip()
         client_id = data.get('client_id')
         prompt_name = data.get('prompt_name', 'Default Prompt').strip()
@@ -820,7 +827,7 @@ def update_prompt():
         session['selected_prompt'] = prompt_name
         return jsonify({'message': 'Prompt updated successfully'}), 200
     except Exception as e:
-        print(f"Error updating prompt: {str(e)}")
+        logger.error(f"Error updating prompt: {str(e)}")
         return jsonify({'error': 'Failed to update prompt'}), 500
 
 @app.route('/upload_template', methods=['POST'])
@@ -839,7 +846,7 @@ def upload_template():
         save_template(file, client_id, current_user.id, prompt_name)
         return jsonify({'message': 'Template uploaded successfully'}), 200
     except Exception as e:
-        print(f"Error uploading template: {str(e)}")
+        logger.error(f"Error uploading template: {str(e)}")
         return jsonify({'error': 'Failed to upload template'}), 500
 
 @app.route('/upload', methods=['POST'])
@@ -863,26 +870,26 @@ def upload_file():
         content = extract_content_from_docx(input_path)
         sections = call_ai_api(content, client_id, current_user.id, prompt_name)
         if "error" in sections:
-            print(f"AI processing failed: {sections['error']}")
+            logger.error(f"AI processing failed: {sections['error']}")
             return f"AI API error: {sections['error']}", 500
         sections["references"] = content["references"]
         output_path = os.path.join(app.config['UPLOAD_FOLDER'], f"reformatted_{filename}")
         create_reformatted_docx(sections, output_path, client_id=client_id, user_id=current_user.id)
         return send_file(output_path, as_attachment=True, download_name=f"reformatted_{filename}")
     except Exception as e:
-        print(f"Upload error: {str(e)}")
+        logger.error(f"Upload error: {str(e)}")
         return "Internal Server Error", 500
     finally:
         if input_path and os.path.exists(input_path):
             try:
                 os.remove(input_path)
             except Exception as e:
-                print(f"Error removing input file: {str(e)}")
+                logger.error(f"Error removing input file: {str(e)}")
         if output_path and os.path.exists(output_path):
             try:
                 os.remove(output_path)
             except Exception as e:
-                print(f"Error removing output file: {str(e)}")
+                logger.error(f"Error removing output file: {str(e)}")
 
 if __name__ == '__main__':
     os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)

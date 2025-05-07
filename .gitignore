@@ -3,3 +3,10 @@ __pycache__/
 venv/
 uploads/
 *.log
+reformatted.docx
+/diligent_doc_reformatter_backup/
+/oldfiles/
+baddapp.py
+xxold_app.py
+testAPI.py
+testsmall.docx
