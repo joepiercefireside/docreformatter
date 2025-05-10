@@ -38,3 +38,7 @@ h1.card-title {
     border: 1px solid #dee2e6;
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
 }
+
+.table {
+    background-color: #ffffff;
+}

@@ -1,43 +1,4 @@
-<script type="text/javascript">
-        var gk_isXlsx = false;
-        var gk_xlsxFileLookup = {};
-        var gk_fileData = {};
-        function filledCell(cell) {
-          return cell !== '' && cell != null;
-        }
-        function loadFileData(filename) {
-        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
-            try {
-                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
-                var firstSheetName = workbook.SheetNames[0];
-                var worksheet = workbook.Sheets[firstSheetName];
-
-                // Convert sheet to JSON to filter blank rows
-                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
-                // Filter out blank rows (rows where all cells are empty, null, or undefined)
-                var filteredData = jsonData.filter(row => row.some(filledCell));
-
-                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
-                var headerRowIndex = filteredData.findIndex((row, index) =>
-                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
-                );
-                // Fallback
-                if (headerRowIndex === -1 || headerRowIndex > 25) {
-                  headerRowIndex = 0;
-                }
-
-                // Convert filtered JSON back to CSV
-                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
-                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
-                return csv;
-            } catch (e) {
-                console.error(e);
-                return "";
-            }
-        }
-        return gk_fileData[filename] || "";
-        }
-        </script><!DOCTYPE html>
+<!DOCTYPE html>
 {% extends "base.html" %}
 {% block title %}Document Reformatter{% endblock %}
 {% block content %}
@@ -61,12 +22,21 @@
                             </div>
                         </form>
                         {% if selected_client %}
-                            <form method="POST" enctype="multipart/form-data">
+                            <form method="POST" enctype="multipart/form-data" id="conversionForm">
                                 <input type="hidden" name="action" value="upload_document">
+                                <div class="form-group">
+                                    <label for="template_name">Select Template:</label>
+                                    <select class="form-control" id="template_name" name="template_name" onchange="loadTemplateContent()">
+                                        <option value="">Select a template</option>
+                                        {% for template in templates %}
+                                            <option value="{{ template.template_name }}" {% if template.template_name == selected_template %}selected{% endif %}>{{ template.template_name }}</option>
+                                        {% endfor %}
+                                    </select>
+                                </div>
                                 <div class="form-group">
                                     <label for="prompt_name">Select Prompt:</label>
                                     <select class="form-control" id="prompt_name" name="prompt_name" onchange="loadPromptContent()">
-                                        <option value="">Select a prompt</option>
+                                        <option value="">Select a prompt or enter below</option>
                                         {% for prompt in prompts %}
                                             <option value="{{ prompt.prompt_name }}" {% if prompt.prompt_name == selected_prompt %}selected{% endif %}>{{ prompt.prompt_name }}</option>
                                         {% endfor %}
@@ -76,28 +46,14 @@
                                     <label for="document_file">Upload Document (.docx):</label>
                                     <input type="file" class="form-control-file" id="document_file" name="document_file" accept=".docx" required>
                                 </div>
-                                <div class="form-group">
-                                    <label for="template_file">Upload Template (.docx):</label>
-                                    <input type="file" class="form-control-file" id="template_file" name="template_file" accept=".docx">
+                                <button type="button" class="btn btn-outline-secondary mb-3" onclick="toggleTemplateUpload()">Upload One-Time Template</button>
+                                <div id="templateUpload" style="display: none;">
+                                    <div class="form-group">
+                                        <label for="template_file">Upload Template (.docx):</label>
+                                        <input type="file" class="form-control-file" id="template_file" name="template_file" accept=".docx">
+                                    </div>
                                 </div>
                                 <button type="submit" class="btn btn-primary">Reformat Document</button>
-                            </form>
-                            <form method="POST" enctype="multipart/form-data" class="mt-3">
-                                <input type="hidden" name="action" value="upload_template">
-                                <div class="form-group">
-                                    <label for="prompt_name_template">Prompt for Template:</label>
-                                    <select class="form-control" id="prompt_name_template" name="prompt_name">
-                                        <option value="">Select a prompt</option>
-                                        {% for prompt in prompts %}
-                                            <option value="{{ prompt.prompt_name }}">{{ prompt.prompt_name }}</option>
-                                        {% endfor %}
-                                    </select>
-                                </div>
-                                <div class="form-group">
-                                    <label for="template_file_only">Upload Template Only (.docx):</label>
-                                    <input type="file" class="form-control-file" id="template_file_only" name="template_file" accept=".docx" required>
-                                </div>
-                                <button type="submit" class="btn btn-secondary">Upload Template</button>
                             </form>
                         {% endif %}
                     </div>
@@ -109,7 +65,7 @@
                         <h4 class="card-title">Prompt Content</h4>
                         <div class="form-group">
                             <label for="custom_prompt">Edit Prompt for This Conversion:</label>
-                            <textarea class="form-control" id="custom_prompt" name="custom_prompt" rows="10">{{ prompt_content }}</textarea>
+                            <textarea class="form-control" id="custom_prompt" name="custom_prompt" rows="10" form="conversionForm">{{ prompt_content }}</textarea>
                         </div>
                     </div>
                 </div>
@@ -121,10 +77,13 @@
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/main.js') }}"></script>
 <script>
+function toggleTemplateUpload() {
+    var templateUpload = document.getElementById('templateUpload');
+    templateUpload.style.display = templateUpload.style.display === 'none' ? 'block' : 'none';
+}
 $(document).ready(function() {
-    // Load prompt content on page load if a prompt is selected
-    if ($('#prompt_name').val()) {
-        loadPromptContent();
+    if ($('#template_name').val()) {
+        loadTemplateContent();
     }
 });
 </script>

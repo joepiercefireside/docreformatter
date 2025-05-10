@@ -67,10 +67,11 @@ def init_db():
                 user_id INTEGER REFERENCES users(id),
                 client_id VARCHAR(50) NOT NULL,
                 prompt JSONB,
-                prompt_name VARCHAR(255) NOT NULL,
+                prompt_name VARCHAR(255),
                 template BYTEA,
+                template_name VARCHAR(255),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                CONSTRAINT settings_unique_user_client_prompt UNIQUE (user_id, client_id, prompt_name)
+                CONSTRAINT settings_unique_user_client_prompt_template UNIQUE (user_id, client_id, prompt_name, template_name)
             );
             CREATE INDEX IF NOT EXISTS idx_client_id ON settings(client_id);
         """)
@@ -208,6 +209,7 @@ def google_auth():
 def logout():
     session.pop('selected_client', None)
     session.pop('selected_prompt', None)
+    session.pop('selected_template', None)
     logout_user()
     flash('You have been logged out.', 'success')
     return redirect(url_for('login'))
@@ -283,7 +285,7 @@ def create_prompt():
                     cur.close()
                     conn.close()
                     return redirect(url_for('create_prompt', client_id=client_id))
-                save_ai_prompt(prompt_content, client_id, current_user.id, prompt_name)
+                save_prompt(prompt_content, client_id, current_user.id, prompt_name)
                 flash(f'Prompt "{prompt_name}" created successfully', 'success')
                 cur.close()
                 conn.close()
@@ -298,7 +300,7 @@ def create_prompt():
                 flash('Prompt name cannot be empty', 'danger')
                 return redirect(url_for('create_prompt', client_id=client_id))
             try:
-                save_ai_prompt(prompt_content, client_id, current_user.id, prompt_name)
+                save_prompt(prompt_content, client_id, current_user.id, prompt_name)
                 flash(f'Prompt "{prompt_name}" updated successfully', 'success')
                 return redirect(url_for('create_prompt', client_id=client_id))
             except Exception as e:
@@ -325,6 +327,113 @@ def create_prompt():
     logger.info(f"Prompts for client {selected_client or 'global'}: {prompts}")
     
     return render_template('create_prompt.html', clients=clients, selected_client=selected_client, prompts=prompts)
+
+# Template creation/editing route
+@app.route('/create_template', methods=['GET', 'POST'])
+@login_required
+def create_template():
+    clients = get_clients(current_user.id)
+    selected_client = request.args.get('client_id', '')
+    templates = []
+    prompts = []
+    
+    # Load prompts for selected client or global
+    conn = get_db_connection()
+    cur = conn.cursor()
+    if selected_client:
+        cur.execute(
+            "SELECT prompt_name, prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND client_id = %s AND prompt IS NOT NULL",
+            (current_user.id, selected_client)
+        )
+    else:
+        cur.execute(
+            "SELECT prompt_name, prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND (client_id = '' OR client_id IS NULL) AND prompt IS NOT NULL",
+            (current_user.id,)
+        )
+    prompts = [{'prompt_name': row[0], 'prompt_content': row[1] or ''} for row in cur.fetchall()]
+    
+    if request.method == 'POST':
+        action = request.form.get('action')
+        client_id = request.form.get('client_id', '').strip()
+        template_name = request.form.get('template_name', '').strip()
+        prompt_name = request.form.get('prompt_name', '').strip()
+        prompt_content = request.form.get('prompt_content', '').strip()
+        template_file = request.files.get('template_file')
+        
+        if action == 'create':
+            if not template_name:
+                flash('Template name cannot be empty', 'danger')
+                return redirect(url_for('create_template', client_id=client_id))
+            if not template_file or not template_file.filename.endswith('.docx'):
+                flash('Valid .docx template file required', 'danger')
+                return redirect(url_for('create_template', client_id=client_id))
+            try:
+                conn = get_db_connection()
+                cur = conn.cursor()
+                # Check if template name exists
+                cur.execute(
+                    "SELECT id FROM settings WHERE user_id = %s AND client_id = %s AND template_name = %s",
+                    (current_user.id, client_id, template_name)
+                )
+                if cur.fetchone():
+                    flash(f'Template "{template_name}" already exists for this client', 'danger')
+                    cur.close()
+                    conn.close()
+                    return redirect(url_for('create_template', client_id=client_id))
+                # Save prompt if provided
+                if prompt_content and prompt_name:
+                    save_prompt(prompt_content, client_id, current_user.id, prompt_name)
+                elif not prompt_name:
+                    flash('Prompt name or content required', 'danger')
+                    cur.close()
+                    conn.close()
+                    return redirect(url_for('create_template', client_id=client_id))
+                # Save template
+                save_template(template_file, client_id, current_user.id, prompt_name, template_name)
+                flash(f'Template "{template_name}" created successfully', 'success')
+                cur.close()
+                conn.close()
+                return redirect(url_for('create_template', client_id=client_id))
+            except Exception as e:
+                logger.error(f"Error creating template: {str(e)}")
+                flash(f'Failed to create template: {str(e)}', 'danger')
+                return redirect(url_for('create_template', client_id=client_id))
+        
+        elif action == 'update':
+            if not template_name:
+                flash('Template name cannot be empty', 'danger')
+                return redirect(url_for('create_template', client_id=client_id))
+            try:
+                if template_file and template_file.filename.endswith('.docx'):
+                    save_template(template_file, client_id, current_user.id, prompt_name, template_name)
+                if prompt_content and prompt_name:
+                    save_prompt(prompt_content, client_id, current_user.id, prompt_name)
+                flash(f'Template "{template_name}" updated successfully', 'success')
+                return redirect(url_for('create_template', client_id=client_id))
+            except Exception as e:
+                logger.error(f"Error updating template: {str(e)}")
+                flash(f'Failed to update template: {str(e)}', 'danger')
+                return redirect(url_for('create_template', client_id=client_id))
+    
+    # Load templates for selected client or global
+    conn = get_db_connection()
+    cur = conn.cursor()
+    if selected_client:
+        cur.execute(
+            "SELECT template_name, prompt_name FROM settings WHERE user_id = %s AND client_id = %s AND template IS NOT NULL",
+            (current_user.id, selected_client)
+        )
+    else:
+        cur.execute(
+            "SELECT template_name, prompt_name FROM settings WHERE user_id = %s AND (client_id = '' OR client_id IS NULL) AND template IS NOT NULL",
+            (current_user.id,)
+        )
+    templates = [{'template_name': row[0], 'prompt_name': row[1]} for row in cur.fetchall()]
+    cur.close()
+    conn.close()
+    logger.info(f"Templates for client {selected_client or 'global'}: {templates}")
+    
+    return render_template('create_template.html', clients=clients, selected_client=selected_client, templates=templates, prompts=prompts)
 
 # Prompt management routes
 @app.route('/load_prompts', methods=['POST'])
@@ -353,15 +462,43 @@ def load_prompts():
         logger.error(f"Error loading prompts: {str(e)}")
         return jsonify({'error': 'Failed to load prompts'}), 500
 
+@app.route('/load_templates', methods=['POST'])
+@login_required
+def load_templates():
+    try:
+        client_id = request.form.get('client_id', '')
+        conn = get_db_connection()
+        cur = conn.cursor()
+        if client_id:
+            cur.execute(
+                "SELECT template_name, prompt_name FROM settings WHERE user_id = %s AND client_id = %s AND template IS NOT NULL",
+                (current_user.id, client_id)
+            )
+        else:
+            cur.execute(
+                "SELECT template_name, prompt_name FROM settings WHERE user_id = %s AND (client_id = '' OR client_id IS NULL) AND template IS NOT NULL",
+                (current_user.id,)
+            )
+        templates = [{'template_name': row[0], 'prompt_name': row[1]} for row in cur.fetchall()]
+        cur.close()
+        conn.close()
+        logger.info(f"Loaded templates for client {client_id or 'global'}: {templates}")
+        return jsonify({'templates': templates}), 200
+    except Exception as e:
+        logger.error(f"Error loading templates: {str(e)}")
+        return jsonify({'error': 'Failed to load templates'}), 500
+
 @app.route('/load_client', methods=['POST'])
 @login_required
 def load_client():
     try:
         data = request.form
         client_id = data.get('client_id', '')
-        prompt_name = data.get('prompt_name')
-        prompt = load_ai_prompt(client_id, current_user.id, prompt_name)
-        return jsonify({'prompt': prompt, 'prompt_name': prompt_name}), 200
+        template_name = data.get('template_name')
+        if not client_id or not template_name:
+            return jsonify({'error': 'Client ID or template name missing'}), 400
+        prompt = load_prompt_for_template(client_id, current_user.id, template_name)
+        return jsonify({'prompt': prompt, 'template_name': template_name}), 200
     except Exception as e:
         logger.error(f"Error loading client: {str(e)}")
         return jsonify({'error': 'Failed to load client'}), 500
@@ -374,8 +511,10 @@ def index():
     logger.info(f"Clients for user {current_user.id}: {clients}")
     
     selected_client = session.get('selected_client')
+    selected_template = session.get('selected_template')
     selected_prompt = session.get('selected_prompt')
     prompt_content = ""
+    templates = []
     prompts = []
 
     if request.method == 'POST':
@@ -384,56 +523,102 @@ def index():
         
         if action == 'select_client' and client_id in clients:
             session['selected_client'] = client_id
+            session.pop('selected_template', None)
             session.pop('selected_prompt', None)
             selected_client = client_id
             flash(f'Selected client: {client_id}', 'success')
         
         elif action == 'upload_document':
             document_file = request.files.get('document_file')
+            template_name = request.form.get('template_name')
             prompt_name = request.form.get('prompt_name')
             custom_prompt = request.form.get('custom_prompt', '').strip()
-            if document_file and document_file.filename.endswith('.docx') and prompt_name and selected_client:
-                filename = secure_filename(document_file.filename)
-                input_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-                output_path = os.path.join(app.config['UPLOAD_FOLDER'], f"reformatted_{filename}")
-                document_file.save(input_path)
-                content = extract_content_from_docx(input_path)
-                # Use custom_prompt if provided, else load from database
-                ai_prompt = custom_prompt if custom_prompt else load_ai_prompt(selected_client, current_user.id, prompt_name)
-                sections = call_ai_api(content, selected_client, current_user.id, prompt_name, custom_prompt=ai_prompt)
-                if "error" in sections:
-                    flash(f"AI processing failed: {sections['error']}", 'danger')
-                    return redirect(url_for('index'))
-                sections["references"] = content["references"]
-                create_reformatted_docx(sections, output_path, client_id=selected_client, user_id=current_user.id)
-                response = send_file(output_path, as_attachment=True, download_name=f"reformatted_{filename}")
-                os.remove(input_path)
-                os.remove(output_path)
-                return response
-            else:
-                flash('Invalid document file, prompt, or missing client', 'danger')
-        
-        elif action == 'upload_template':
             template_file = request.files.get('template_file')
-            prompt_name = request.form.get('prompt_name')
-            if template_file and template_file.filename.endswith('.docx') and selected_client and prompt_name:
-                save_template(template_file, selected_client, current_user.id, prompt_name)
-                flash('Template uploaded successfully', 'success')
+            
+            if not document_file or not document_file.filename.endswith('.docx'):
+                flash('Valid .docx document required', 'danger')
+                return redirect(url_for('index'))
+            
+            if not selected_client:
+                flash('Please select a client', 'danger')
+                return redirect(url_for('index'))
+            
+            filename = secure_filename(document_file.filename)
+            input_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            output_path = os.path.join(app.config['UPLOAD_FOLDER'], f"reformatted_{filename}")
+            document_file.save(input_path)
+            content = extract_content_from_docx(input_path)
+            
+            # Handle prompt
+            ai_prompt = custom_prompt if custom_prompt else load_prompt_for_template(selected_client, current_user.id, template_name) if template_name else DEFAULT_AI_PROMPT
+            
+            # Handle template
+            if template_file and template_file.filename.endswith('.docx'):
+                temp_template_path = os.path.join(app.config['UPLOAD_FOLDER'], 'temp_template.docx')
+                template_file.save(temp_template_path)
+                template_used = True
             else:
-                flash('Invalid template file, missing prompt, or missing client', 'danger')
+                template_used = load_template(temp_template_path, selected_client, current_user.id, template_name) if template_name else False
+                temp_template_path = os.path.join(app.config['UPLOAD_FOLDER'], 'temp_template.docx')
+            
+            sections = call_ai_api(content, selected_client, current_user.id, prompt_name, custom_prompt=ai_prompt)
+            if "error" in sections:
+                flash(f"AI processing failed: {sections['error']}", 'danger')
+                os.remove(input_path)
+                if template_used and os.path.exists(temp_template_path):
+                    os.remove(temp_template_path)
+                return redirect(url_for('index'))
+            sections["references"] = content["references"]
+            create_reformatted_docx(sections, output_path, client_id=selected_client, user_id=current_user.id)
+            response = send_file(output_path, as_attachment=True, download_name=f"reformatted_{filename}")
+            os.remove(input_path)
+            if template_used and os.path.exists(temp_template_path):
+                os.remove(temp_template_path)
+            os.remove(output_path)
+            return response
+        
+        elif action == 'select_template':
+            template_name = request.form.get('template_name')
+            if template_name:
+                session['selected_template'] = template_name
+                selected_template = template_name
+                prompt_content = load_prompt_for_template(selected_client, current_user.id, template_name)
+                session['selected_prompt'] = prompt_name
+                selected_prompt = prompt_name
+                flash(f'Selected template: {template_name}', 'success')
+            else:
+                session.pop('selected_template', None)
+                session.pop('selected_prompt', None)
+                selected_template = None
+                selected_prompt = None
+                prompt_content = ""
 
     # Handle GET with query parameter
     client_id = request.args.get('client_id')
     if client_id and client_id in clients:
         session['selected_client'] = client_id
+        session.pop('selected_template', None)
         session.pop('selected_prompt', None)
         selected_client = client_id
+        selected_template = None
+        selected_prompt = None
 
-    # Load prompts for selected client or global
+    # Load templates and prompts for selected client or global
     if selected_client:
         conn = get_db_connection()
         cur = conn.cursor()
-        # Include global prompts (client_id = '' or NULL)
+        # Load templates
+        cur.execute(
+            """
+            SELECT template_name, prompt_name 
+            FROM settings 
+            WHERE user_id = %s AND (client_id = %s OR client_id = '' OR client_id IS NULL) 
+            AND template IS NOT NULL
+            """,
+            (current_user.id, selected_client)
+        )
+        templates = [{'template_name': row[0], 'prompt_name': row[1]} for row in cur.fetchall()]
+        # Load prompts
         cur.execute(
             """
             SELECT prompt_name, prompt->'prompt' AS prompt_content 
@@ -446,22 +631,18 @@ def index():
         prompts = [{'prompt_name': row[0], 'prompt_content': row[1] or ''} for row in cur.fetchall()]
         cur.close()
         conn.close()
+        logger.info(f"Templates for client {selected_client}: {templates}")
         logger.info(f"Prompts for client {selected_client}: {prompts}")
-        if prompts:
-            if selected_prompt and any(p['prompt_name'] == selected_prompt for p in prompts):
-                prompt_content = next(p['prompt_content'] for p in prompts if p['prompt_name'] == selected_prompt)
-            else:
-                selected_prompt = prompts[0]['prompt_name']
-                session['selected_prompt'] = selected_prompt
-                prompt_content = prompts[0]['prompt_content']
-        else:
-            selected_prompt = None
-            session.pop('selected_prompt', None)
+        if selected_template:
+            prompt_content = load_prompt_for_template(selected_client, current_user.id, selected_template)
+            selected_prompt = next((t['prompt_name'] for t in templates if t['template_name'] == selected_template), None)
 
     return render_template('index.html', 
                          clients=clients, 
                          selected_client=selected_client, 
+                         templates=templates, 
                          prompts=prompts, 
+                         selected_template=selected_template, 
                          selected_prompt=selected_prompt, 
                          prompt_content=prompt_content)
 
@@ -478,7 +659,7 @@ DEFAULT_AI_PROMPT = """You are a medical document analyst. Analyze the provided 
 - Tables: Assign tables to appropriate sections (e.g., 'Patient Demographics', 'Adverse Events') based on their content.
 Return a JSON object with these keys and the corresponding content extracted or rewritten from the input. Preserve references separately. Ensure the response is valid JSON. For tables, return a dictionary where keys are descriptive section names and values are lists of rows, each row being a list of cell values. Focus on accurately interpreting and summarizing the source material, avoiding any formatting instructions."""
 
-def load_ai_prompt(client_id=None, user_id=None, prompt_name=None):
+def load_prompt(client_id=None, user_id=None, prompt_name=None):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
@@ -502,31 +683,48 @@ def load_ai_prompt(client_id=None, user_id=None, prompt_name=None):
         conn.close()
         return result[0] if result and result[0] else DEFAULT_AI_PROMPT
     except Exception as e:
-        logger.error(f"Error loading AI prompt: {str(e)}")
+        logger.error(f"Error loading prompt: {str(e)}")
         return DEFAULT_AI_PROMPT
 
-def save_ai_prompt(prompt, client_id, user_id, prompt_name):
+def load_prompt_for_template(client_id, user_id, template_name):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND client_id = %s AND template_name = %s AND prompt IS NOT NULL ORDER BY created_at DESC LIMIT 1",
+            (user_id, client_id, template_name)
+        )
+        result = cur.fetchone()
+        cur.close()
+        conn.close()
+        return result[0] if result and result[0] else DEFAULT_AI_PROMPT
+    except Exception as e:
+        logger.error(f"Error loading prompt for template: {str(e)}")
+        return DEFAULT_AI_PROMPT
+
+def save_prompt(prompt, client_id, user_id, prompt_name):
     try:
         if not prompt_name:
             raise ValueError(f"Prompt name cannot be empty: prompt_name={prompt_name}")
-        # Use empty string for global prompts
         client_id = client_id or ''
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO settings (user_id, client_id, prompt, prompt_name) VALUES (%s, %s, %s, %s) ON CONFLICT ON CONSTRAINT settings_unique_user_client_prompt DO UPDATE SET prompt = EXCLUDED.prompt",
+            "INSERT INTO settings (user_id, client_id, prompt, prompt_name) VALUES (%s, %s, %s, %s) ON CONFLICT ON CONSTRAINT settings_unique_user_client_prompt_template DO UPDATE SET prompt = EXCLUDED.prompt",
             (user_id, client_id, Json({'prompt': prompt}), prompt_name)
         )
         conn.commit()
         cur.close()
         conn.close()
-        logger.info(f"Saved AI prompt '{prompt_name}' for client {client_id or 'global'}, user {user_id}: {prompt[:100]}...")
+        logger.info(f"Saved prompt '{prompt_name}' for client {client_id or 'global'}, user {user_id}: {prompt[:100]}...")
     except Exception as e:
-        logger.error(f"Error saving AI prompt: {str(e)}")
+        logger.error(f"Error saving prompt: {str(e)}")
         raise
 
-def save_template(file, client_id, user_id, prompt_name):
+def save_template(file, client_id, user_id, prompt_name, template_name):
     try:
+        if not template_name:
+            raise ValueError(f"Template name cannot be empty: template_name={template_name}")
         if not prompt_name:
             raise ValueError(f"Prompt name cannot be empty: prompt_name={prompt_name}")
         client_id = client_id or ''
@@ -534,25 +732,25 @@ def save_template(file, client_id, user_id, prompt_name):
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO settings (user_id, client_id, template, prompt_name) VALUES (%s, %s, %s, %s) ON CONFLICT ON CONSTRAINT settings_unique_user_client_prompt DO UPDATE SET template = EXCLUDED.template",
-            (user_id, client_id, file_data, prompt_name)
+            "INSERT INTO settings (user_id, client_id, template, prompt_name, template_name) VALUES (%s, %s, %s, %s, %s) ON CONFLICT ON CONSTRAINT settings_unique_user_client_prompt_template DO UPDATE SET template = EXCLUDED.template",
+            (user_id, client_id, file_data, prompt_name, template_name)
         )
         conn.commit()
         cur.close()
         conn.close()
-        logger.info(f"Saved template for client {client_id or 'global'}, user {user_id}, prompt {prompt_name}")
+        logger.info(f"Saved template '{template_name}' for client {client_id or 'global'}, user {user_id}, prompt {prompt_name}")
     except Exception as e:
         logger.error(f"Error saving template: {str(e)}")
         raise
 
-def load_template(output_path, client_id=None, user_id=None, prompt_name=None):
+def load_template(output_path, client_id=None, user_id=None, template_name=None):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        if client_id and user_id and prompt_name:
+        if client_id and user_id and template_name:
             cur.execute(
-                "SELECT template FROM settings WHERE client_id = %s AND user_id = %s AND prompt_name = %s AND template IS NOT NULL ORDER BY created_at DESC LIMIT 1",
-                (client_id, user_id, prompt_name)
+                "SELECT template FROM settings WHERE client_id = %s AND user_id = %s AND template_name = %s AND template IS NOT NULL ORDER BY created_at DESC LIMIT 1",
+                (client_id, user_id, template_name)
             )
         elif client_id and user_id:
             cur.execute(
@@ -629,7 +827,7 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
     }
     text = "\n".join(content["text"])
     tables = json.dumps(content["tables"])
-    ai_prompt = custom_prompt if custom_prompt else load_ai_prompt(client_id, user_id, prompt_name)
+    ai_prompt = custom_prompt if custom_prompt else load_prompt(client_id, user_id, prompt_name)
     messages = [
         {"role": "system", "content": ai_prompt},
         {
@@ -766,8 +964,8 @@ def create_reformatted_docx(sections, output_path, drug_name="KRESLADI", client_
         }
         sections = {**default_sections, **sections}
         template_path = os.path.join(app.config['UPLOAD_FOLDER'], 'temp_template.docx')
-        if load_template(template_path, client_id, user_id):
-            logger.info(f"Using template for client {client_id}, user {user_id}: {template_path}")
+        if os.path.exists(template_path):
+            logger.info(f"Using template: {template_path}")
             doc = Document(template_path)
             def replace_placeholder(paragraph, placeholder, content, preserve_style=True):
                 if placeholder.lower() in paragraph.text.lower():
@@ -839,7 +1037,7 @@ def create_reformatted_docx(sections, output_path, drug_name="KRESLADI", client_
                     para = doc.add_paragraph(section_name)
                     add_styled_table(doc, table_data, section_name)
         else:
-            logger.info(f"No template found for client {client_id}, user {user_id}, using default formatting")
+            logger.info(f"No template found, using default formatting")
             doc = Document()
             add_styled_heading(doc, f"{drug_name} (marnetegragene autotemcel)", level=1)
             add_styled_heading(doc, "Summary", level=1)
@@ -877,50 +1075,6 @@ def create_reformatted_docx(sections, output_path, drug_name="KRESLADI", client_
     except Exception as e:
         logger.error(f"Error creating reformatted docx: {str(e)}")
         raise
-
-@app.route('/upload', methods=['POST'])
-@login_required
-def upload_file():
-    input_path = None
-    output_path = None
-    try:
-        if 'file' not in request.files:
-            return "No file uploaded", 400
-        file = request.files['file']
-        if file.filename == '':
-            return "No file selected", 400
-        if not file.filename.endswith('.docx'):
-            return "Only .docx files are supported", 400
-        client_id = request.form.get('client_id')
-        prompt_name = request.form.get('prompt_name')
-        custom_prompt = request.form.get('custom_prompt', '')
-        filename = secure_filename(file.filename)
-        input_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(input_path)
-        content = extract_content_from_docx(input_path)
-        ai_prompt = custom_prompt if custom_prompt else load_ai_prompt(client_id, current_user.id, prompt_name)
-        sections = call_ai_api(content, client_id, current_user.id, prompt_name, custom_prompt=ai_prompt)
-        if "error" in sections:
-            logger.error(f"AI processing failed: {sections['error']}")
-            return f"AI API error: {sections['error']}", 500
-        sections["references"] = content["references"]
-        output_path = os.path.join(app.config['UPLOAD_FOLDER'], f"reformatted_{filename}")
-        create_reformatted_docx(sections, output_path, client_id=client_id, user_id=current_user.id)
-        return send_file(output_path, as_attachment=True, download_name=f"reformatted_{filename}")
-    except Exception as e:
-        logger.error(f"Upload error: {str(e)}")
-        return "Internal Server Error", 500
-    finally:
-        if input_path and os.path.exists(input_path):
-            try:
-                os.remove(input_path)
-            except Exception as e:
-                logger.error(f"Error removing input file: {str(e)}")
-        if output_path and os.path.exists(output_path):
-            try:
-                os.remove(output_path)
-            except Exception as e:
-                logger.error(f"Error removing output file: {str(e)}")
 
 if __name__ == '__main__':
     os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
