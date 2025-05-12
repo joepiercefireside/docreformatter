@@ -495,10 +495,17 @@ def load_client():
         data = request.form
         client_id = data.get('client_id', '')
         template_name = data.get('template_name')
-        if not client_id or not template_name:
-            return jsonify({'error': 'Client ID or template name missing'}), 400
-        prompt = load_prompt_for_template(client_id, current_user.id, template_name)
-        return jsonify({'prompt': prompt, 'template_name': template_name}), 200
+        prompt_name = data.get('prompt_name')
+        if not client_id:
+            return jsonify({'error': 'Client ID missing'}), 400
+        if template_name:
+            prompt = load_prompt_for_template(client_id, current_user.id, template_name)
+            prompt_name = get_prompt_name_for_template(client_id, current_user.id, template_name)
+            return jsonify({'prompt': prompt, 'prompt_name': prompt_name or ''}), 200
+        elif prompt_name:
+            prompt = load_prompt(client_id, current_user.id, prompt_name)
+            return jsonify({'prompt': prompt, 'prompt_name': prompt_name}), 200
+        return jsonify({'error': 'Template or prompt name required'}), 400
     except Exception as e:
         logger.error(f"Error loading client: {str(e)}")
         return jsonify({'error': 'Failed to load client'}), 500
@@ -550,16 +557,16 @@ def index():
             content = extract_content_from_docx(input_path)
             
             # Handle prompt
-            ai_prompt = custom_prompt if custom_prompt else load_prompt_for_template(selected_client, current_user.id, template_name) if template_name else DEFAULT_AI_PROMPT
+            ai_prompt = custom_prompt if custom_prompt else load_prompt_for_template(selected_client, current_user.id, template_name) if template_name else load_prompt(selected_client, current_user.id, prompt_name) if prompt_name else DEFAULT_AI_PROMPT
             
             # Handle template
+            temp_template_path = os.path.join(app.config['UPLOAD_FOLDER'], 'temp_template.docx')
+            template_used = False
             if template_file and template_file.filename.endswith('.docx'):
-                temp_template_path = os.path.join(app.config['UPLOAD_FOLDER'], 'temp_template.docx')
                 template_file.save(temp_template_path)
                 template_used = True
-            else:
-                template_used = load_template(temp_template_path, selected_client, current_user.id, template_name) if template_name else False
-                temp_template_path = os.path.join(app.config['UPLOAD_FOLDER'], 'temp_template.docx')
+            elif template_name:
+                template_used = load_template(temp_template_path, selected_client, current_user.id, template_name)
             
             sections = call_ai_api(content, selected_client, current_user.id, prompt_name, custom_prompt=ai_prompt)
             if "error" in sections:
@@ -583,6 +590,7 @@ def index():
                 session['selected_template'] = template_name
                 selected_template = template_name
                 prompt_content = load_prompt_for_template(selected_client, current_user.id, template_name)
+                prompt_name = get_prompt_name_for_template(selected_client, current_user.id, template_name)
                 session['selected_prompt'] = prompt_name
                 selected_prompt = prompt_name
                 flash(f'Selected template: {template_name}', 'success')
@@ -701,6 +709,22 @@ def load_prompt_for_template(client_id, user_id, template_name):
     except Exception as e:
         logger.error(f"Error loading prompt for template: {str(e)}")
         return DEFAULT_AI_PROMPT
+
+def get_prompt_name_for_template(client_id, user_id, template_name):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT prompt_name FROM settings WHERE user_id = %s AND client_id = %s AND template_name = %s ORDER BY created_at DESC LIMIT 1",
+            (user_id, client_id, template_name)
+        )
+        result = cur.fetchone()
+        cur.close()
+        conn.close()
+        return result[0] if result else None
+    except Exception as e:
+        logger.error(f"Error getting prompt name for template: {str(e)}")
+        return None
 
 def save_prompt(prompt, client_id, user_id, prompt_name):
     try:
