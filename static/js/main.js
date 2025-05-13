@@ -1,109 +1,75 @@
-<!DOCTYPE html>
-{% extends "base.html" %}
-{% block title %}Create Templates{% endblock %}
-{% block content %}
-<div class="card shadow-sm">
-    <div class="card-body">
-        <h1 class="card-title mb-4">Create/Edit Templates</h1>
-        <form method="GET" action="{{ url_for('create_template') }}">
-            <div class="form-group">
-                <label for="client_id">Select Client:</label>
-                <select class="form-control" id="client_id" name="client_id" onchange="this.form.submit()">
-                    <option value="">Global (All Clients)</option>
-                    {% for client in clients %}
-                        <option value="{{ client }}" {% if client == selected_client %}selected{% endif %}>{{ client }}</option>
-                    {% endfor %}
-                </select>
-            </div>
-        </form>
-        <h3>{% if selected_client %}Templates for {{ selected_client }}{% else %}Global Templates{% endif %}</h3>
-        {% if templates %}
-            <table class="table table-bordered">
-                <thead>
-                    <tr>
-                        <th>Template Name</th>
-                        <th>Associated Prompt</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for template in templates %}
-                        <tr>
-                            <td>{{ template.template_name }}</td>
-                            <td>{{ template.prompt_name }}</td>
-                            <td>
-                                <button class="btn btn-sm btn-primary" onclick="editTemplate('{{ template.template_name }}', '{{ template.prompt_name }}')">Edit</button>
-                            </td>
-                        </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        {% else %}
-            <p>No templates found for {% if selected_client %}{{ selected_client }}{% else %}global use{% endif %}.</p>
-        {% endif %}
-        <h3>{% if selected_template %}Edit Template{% else %}Create New Template{% endif %}</h3>
-        <form method="POST" enctype="multipart/form-data">
-            <input type="hidden" name="action" value="{% if selected_template %}update{% else %}create{% endif %}">
-            <input type="hidden" name="client_id" value="{{ selected_client }}">
-            <div class="form-group">
-                <label for="template_name">Template Name:</label>
-                <input type="text" class="form-control" id="template_name" name="template_name" value="{{ selected_template or '' }}" required>
-            </div>
-            <div class="form-group">
-                <label for="prompt_name">Select Prompt:</label>
-                <select class="form-control" id="prompt_name" name="prompt_name" onchange="loadPromptContentForTemplate()">
-                    <option value="">Select a prompt or create below</option>
-                    {% for prompt in prompts %}
-                        <option value="{{ prompt.prompt_name }}" {% if prompt.prompt_name == selected_prompt %}selected{% endif %}>{{ prompt.prompt_name }}</option>
-                    {% endfor %}
-                </select>
-            </div>
-            <div class="form-group">
-                <label for="prompt_content">Create New Prompt (Optional):</label>
-                <textarea class="form-control" id="prompt_content" name="prompt_content" rows="5"></textarea>
-            </div>
-            <div class="form-group">
-                <label for="template_file">Upload Template (.docx):</label>
-                <input type="file" class="form-control-file" id="template_file" name="template_file" accept=".docx" required>
-            </div>
-            <button type="submit" class="btn btn-primary">{% if selected_template %}Update Template{% else %}Create Template{% endif %}</button>
-        </form>
-    </div>
-</div>
-<script>
-function editTemplate(templateName, promptName) {
-    document.getElementById('template_name').value = templateName;
-    document.getElementById('prompt_name').value = promptName;
-    document.querySelector('input[name="action"]').value = 'update';
-    loadPromptContentForTemplate();
-}
-
-function loadPromptContentForTemplate() {
-    var clientId = document.querySelector('input[name="client_id"]').value;
-    var promptName = document.getElementById('prompt_name').value;
+function loadTemplateContent() {
+    var clientId = document.getElementById('client_id').value;
+    var templateName = document.getElementById('template_name').value;
     
-    if (promptName && clientId) {
+    if (templateName && clientId) {
         $.ajax({
             url: '/load_client',
             type: 'POST',
             data: {
                 client_id: clientId,
-                template_name: document.getElementById('template_name').value
+                template_name: templateName
             },
             success: function(response) {
-                if (response.prompt) {
-                    document.getElementById('prompt_content').value = response.prompt;
+                if (response.prompt && response.prompt_name) {
+                    document.getElementById('custom_prompt').value = response.prompt;
+                    document.getElementById('prompt_name_group').style.display = 'none';
                 } else {
-                    document.getElementById('prompt_content').value = '';
+                    document.getElementById('custom_prompt').value = '';
+                    document.getElementById('prompt_name_group').style.display = 'block';
+                    document.getElementById('prompt_name').value = 'Custom';
+                    alert('No prompt associated with this template; please select or create a prompt');
                 }
             },
             error: function() {
-                document.getElementById('prompt_content').value = '';
+                document.getElementById('custom_prompt').value = '';
+                document.getElementById('prompt_name_group').style.display = 'block';
+                document.getElementById('prompt_name').value = 'Custom';
+                alert('Error loading prompt for template');
             }
         });
     } else {
-        document.getElementById('prompt_content').value = '';
+        document.getElementById('custom_prompt').value = '';
+        document.getElementById('prompt_name_group').style.display = 'block';
+        document.getElementById('prompt_name').value = 'Custom';
     }
 }
-</script>
-{% endblock %}
+
+function loadPromptContent() {
+    var clientId = document.getElementById('client_id').value;
+    var promptName = document.getElementById('prompt_name').value;
+    
+    if (promptName && promptName !== 'Custom' && clientId) {
+        $.ajax({
+            url: '/load_client',
+            type: 'POST',
+            data: {
+                client_id: clientId,
+                prompt_name: promptName
+            },
+            success: function(response) {
+                if (response.prompt) {
+                    document.getElementById('custom_prompt').value = response.prompt;
+                } else {
+                    document.getElementById('custom_prompt').value = '';
+                    alert('Failed to load prompt content');
+                }
+            },
+            error: function() {
+                document.getElementById('custom_prompt').value = '';
+                alert('Error loading prompt content');
+            }
+        });
+    } else {
+        document.getElementById('custom_prompt').value = '';
+    }
+}
+
+function toggleTemplateUpload() {
+    var templateUpload = document.getElementById('templateUpload');
+    templateUpload.style.display = templateUpload.style.display === 'none' ? 'block' : 'none';
+    document.getElementById('template_name').value = '';
+    document.getElementById('prompt_name_group').style.display = 'block';
+    document.getElementById('prompt_name').value = 'Custom';
+    document.getElementById('custom_prompt').value = '';
+}

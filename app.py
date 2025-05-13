@@ -221,32 +221,20 @@ def create_client():
     if request.method == 'POST':
         try:
             client_id = request.form.get('client_id').strip()
-            prompt_name = request.form.get('prompt_name', 'Default Prompt').strip()
-            prompt_content = request.form.get('prompt_content', DEFAULT_AI_PROMPT).strip()
             if not client_id:
                 flash('Client ID cannot be empty', 'danger')
                 return redirect(url_for('create_client'))
-            if not prompt_name:
-                flash('Prompt name cannot be empty', 'danger')
-                return redirect(url_for('create_client'))
             conn = get_db_connection()
             cur = conn.cursor()
-            cur.execute("SELECT id FROM settings WHERE user_id = %s AND client_id = %s AND prompt_name = %s", 
-                        (current_user.id, client_id, prompt_name))
-            if cur.fetchone():
-                flash('Client ID and prompt name combination already exists', 'danger')
-                cur.close()
-                conn.close()
-                return redirect(url_for('create_client'))
+            # Insert a minimal record to register the client
             cur.execute(
-                "INSERT INTO settings (user_id, client_id, prompt, prompt_name) VALUES (%s, %s, %s, %s)",
-                (current_user.id, client_id, Json({'prompt': prompt_content}), prompt_name)
+                "INSERT INTO settings (user_id, client_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                (current_user.id, client_id)
             )
             conn.commit()
             cur.close()
             conn.close()
             session['selected_client'] = client_id
-            session['selected_prompt'] = prompt_name
             flash(f'Client {client_id} created successfully', 'success')
             return redirect(url_for('index'))
         except Exception as e:
@@ -273,6 +261,9 @@ def create_prompt():
             if not prompt_name:
                 flash('Prompt name cannot be empty', 'danger')
                 return redirect(url_for('create_prompt', client_id=client_id))
+            if not prompt_content:
+                flash('Prompt content cannot be empty', 'danger')
+                return redirect(url_for('create_prompt', client_id=client_id))
             try:
                 conn = get_db_connection()
                 cur = conn.cursor()
@@ -298,6 +289,9 @@ def create_prompt():
         elif action == 'update':
             if not prompt_name:
                 flash('Prompt name cannot be empty', 'danger')
+                return redirect(url_for('create_prompt', client_id=client_id))
+            if not prompt_content:
+                flash('Prompt content cannot be empty', 'danger')
                 return redirect(url_for('create_prompt', client_id=client_id))
             try:
                 save_prompt(prompt_content, client_id, current_user.id, prompt_name)
@@ -367,6 +361,9 @@ def create_template():
             if not template_file or not template_file.filename.endswith('.docx'):
                 flash('Valid .docx template file required', 'danger')
                 return redirect(url_for('create_template', client_id=client_id))
+            if not prompt_name and not (prompt_content and prompt_name):
+                flash('Please select an existing prompt or create a new one', 'danger')
+                return redirect(url_for('create_template', client_id=client_id))
             try:
                 conn = get_db_connection()
                 cur = conn.cursor()
@@ -383,11 +380,6 @@ def create_template():
                 # Save prompt if provided
                 if prompt_content and prompt_name:
                     save_prompt(prompt_content, client_id, current_user.id, prompt_name)
-                elif not prompt_name:
-                    flash('Prompt name or content required', 'danger')
-                    cur.close()
-                    conn.close()
-                    return redirect(url_for('create_template', client_id=client_id))
                 # Save template
                 save_template(template_file, client_id, current_user.id, prompt_name, template_name)
                 flash(f'Template "{template_name}" created successfully', 'success')
@@ -402,6 +394,9 @@ def create_template():
         elif action == 'update':
             if not template_name:
                 flash('Template name cannot be empty', 'danger')
+                return redirect(url_for('create_template', client_id=client_id))
+            if not prompt_name and not (prompt_content and prompt_name):
+                flash('Please select an existing prompt or create a new one', 'danger')
                 return redirect(url_for('create_template', client_id=client_id))
             try:
                 if template_file and template_file.filename.endswith('.docx'):
@@ -502,10 +497,10 @@ def load_client():
             prompt = load_prompt_for_template(client_id, current_user.id, template_name)
             prompt_name = get_prompt_name_for_template(client_id, current_user.id, template_name)
             return jsonify({'prompt': prompt, 'prompt_name': prompt_name or ''}), 200
-        elif prompt_name:
+        elif prompt_name and prompt_name != 'Custom':
             prompt = load_prompt(client_id, current_user.id, prompt_name)
             return jsonify({'prompt': prompt, 'prompt_name': prompt_name}), 200
-        return jsonify({'error': 'Template or prompt name required'}), 400
+        return jsonify({'prompt': '', 'prompt_name': 'Custom'}), 200
     except Exception as e:
         logger.error(f"Error loading client: {str(e)}")
         return jsonify({'error': 'Failed to load client'}), 500
@@ -519,7 +514,7 @@ def index():
     
     selected_client = session.get('selected_client')
     selected_template = session.get('selected_template')
-    selected_prompt = session.get('selected_prompt')
+    selected_prompt = session.get('selected_prompt', 'Custom')
     prompt_content = ""
     templates = []
     prompts = []
@@ -533,12 +528,14 @@ def index():
             session.pop('selected_template', None)
             session.pop('selected_prompt', None)
             selected_client = client_id
+            selected_template = None
+            selected_prompt = 'Custom'
             flash(f'Selected client: {client_id}', 'success')
         
         elif action == 'upload_document':
             document_file = request.files.get('document_file')
             template_name = request.form.get('template_name')
-            prompt_name = request.form.get('prompt_name')
+            prompt_name = request.form.get('prompt_name', 'Custom')
             custom_prompt = request.form.get('custom_prompt', '').strip()
             template_file = request.files.get('template_file')
             
@@ -550,6 +547,14 @@ def index():
                 flash('Please select a client', 'danger')
                 return redirect(url_for('index'))
             
+            if not template_name and not template_file:
+                flash('Please select a template or upload a one-time template', 'danger')
+                return redirect(url_for('index'))
+            
+            if prompt_name == 'Custom' and not custom_prompt:
+                flash('Please enter a custom prompt or select an existing one', 'danger')
+                return redirect(url_for('index'))
+            
             filename = secure_filename(document_file.filename)
             input_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
             output_path = os.path.join(app.config['UPLOAD_FOLDER'], f"reformatted_{filename}")
@@ -557,7 +562,7 @@ def index():
             content = extract_content_from_docx(input_path)
             
             # Handle prompt
-            ai_prompt = custom_prompt if custom_prompt else load_prompt_for_template(selected_client, current_user.id, template_name) if template_name else load_prompt(selected_client, current_user.id, prompt_name) if prompt_name else DEFAULT_AI_PROMPT
+            ai_prompt = custom_prompt if custom_prompt else load_prompt_for_template(selected_client, current_user.id, template_name) if template_name else load_prompt(selected_client, current_user.id, prompt_name) if prompt_name != 'Custom' else DEFAULT_AI_PROMPT
             
             # Handle template
             temp_template_path = os.path.join(app.config['UPLOAD_FOLDER'], 'temp_template.docx')
@@ -591,14 +596,14 @@ def index():
                 selected_template = template_name
                 prompt_content = load_prompt_for_template(selected_client, current_user.id, template_name)
                 prompt_name = get_prompt_name_for_template(selected_client, current_user.id, template_name)
-                session['selected_prompt'] = prompt_name
-                selected_prompt = prompt_name
+                session['selected_prompt'] = prompt_name or 'Custom'
+                selected_prompt = prompt_name or 'Custom'
                 flash(f'Selected template: {template_name}', 'success')
             else:
                 session.pop('selected_template', None)
                 session.pop('selected_prompt', None)
                 selected_template = None
-                selected_prompt = None
+                selected_prompt = 'Custom'
                 prompt_content = ""
 
     # Handle GET with query parameter
@@ -609,7 +614,7 @@ def index():
         session.pop('selected_prompt', None)
         selected_client = client_id
         selected_template = None
-        selected_prompt = None
+        selected_prompt = 'Custom'
 
     # Load templates and prompts for selected client or global
     if selected_client:
@@ -643,7 +648,7 @@ def index():
         logger.info(f"Prompts for client {selected_client}: {prompts}")
         if selected_template:
             prompt_content = load_prompt_for_template(selected_client, current_user.id, selected_template)
-            selected_prompt = next((t['prompt_name'] for t in templates if t['template_name'] == selected_template), None)
+            selected_prompt = get_prompt_name_for_template(selected_client, current_user.id, selected_template) or 'Custom'
 
     return render_template('index.html', 
                          clients=clients, 
@@ -730,6 +735,8 @@ def save_prompt(prompt, client_id, user_id, prompt_name):
     try:
         if not prompt_name:
             raise ValueError(f"Prompt name cannot be empty: prompt_name={prompt_name}")
+        if not prompt:
+            raise ValueError(f"Prompt content cannot be empty")
         client_id = client_id or ''
         conn = get_db_connection()
         cur = conn.cursor()

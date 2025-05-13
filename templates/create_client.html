@@ -1,33 +1,17 @@
-<!-- templates/create_client.html -->
+<!DOCTYPE html>
 {% extends "base.html" %}
-{% block title %}Create Client - Diligent Doc Reformatter{% endblock %}
+{% block title %}Create Client{% endblock %}
 {% block content %}
-<div class="row justify-content-center">
-    <div class="col-md-6">
-        <div class="card">
-            <div class="card-header">
-                <i class="fas fa-user-plus"></i> Create New Client
+<div class="card shadow-sm">
+    <div class="card-body">
+        <h1 class="card-title mb-4">Create New Client</h1>
+        <form method="POST">
+            <div class="form-group">
+                <label for="client_id">Client ID:</label>
+                <input type="text" class="form-control" id="client_id" name="client_id" required>
             </div>
-            <div class="card-body">
-                <form method="POST" action="{{ url_for('create_client') }}">
-                    <div class="mb-3">
-                        <label for="client_id" class="form-label">Client ID</label>
-                        <input type="text" class="form-control" id="client_id" name="client_id" required>
-                    </div>
-                    <div class="mb-3">
-                        <label for="prompt_name" class="form-label">Initial Prompt Name</label>
-                        <input type="text" class="form-control" id="prompt_name" name="prompt_name" value="Default Prompt" required>
-                    </div>
-                    <div class="mb-3">
-                        <label for="prompt_content" class="form-label">Initial Prompt Content</label>
-                        <textarea class="form-control" id="prompt_content" name="prompt_content" rows="5">You are an expert medical document analyst...</textarea>
-                    </div>
-                    <button type="submit" class="btn btn-primary">
-                        <i class="fas fa-save"></i> Create Client
-                    </button>
-                </form>
-            </div>
-        </div>
+            <button type="submit" class="btn btn-primary">Create Client</button>
+        </form>
     </div>
 </div>
 {% endblock %}

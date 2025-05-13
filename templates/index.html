@@ -27,20 +27,21 @@
                                 <div class="form-group">
                                     <label for="template_name">Select Template:</label>
                                     <select class="form-control" id="template_name" name="template_name" onchange="loadTemplateContent()">
-                                        <option value="">Select a template</option>
+                                        <option value="">Select a template or upload one-time</option>
                                         {% for template in templates %}
                                             <option value="{{ template.template_name }}" {% if template.template_name == selected_template %}selected{% endif %}>{{ template.template_name }}</option>
                                         {% endfor %}
                                     </select>
                                 </div>
-                                <div class="form-group">
+                                <div class="form-group" id="prompt_name_group" style="display: {% if selected_template %}none{% else %}block{% endif %};">
                                     <label for="prompt_name">Select Prompt:</label>
                                     <select class="form-control" id="prompt_name" name="prompt_name" onchange="loadPromptContent()">
-                                        <option value="">Select a prompt or enter below</option>
+                                        <option value="Custom" {% if selected_prompt == 'Custom' %}selected{% endif %}>Custom</option>
                                         {% for prompt in prompts %}
                                             <option value="{{ prompt.prompt_name }}" {% if prompt.prompt_name == selected_prompt %}selected{% endif %}>{{ prompt.prompt_name }}</option>
                                         {% endfor %}
                                     </select>
+                                    <small class="form-text text-muted">Select "Custom" to enter a new prompt below.</small>
                                 </div>
                                 <div class="form-group">
                                     <label for="document_file">Upload Document (.docx):</label>
@@ -64,8 +65,9 @@
                     <div class="card-body">
                         <h4 class="card-title">Prompt Content</h4>
                         <div class="form-group">
-                            <label for="custom_prompt">Edit Prompt for This Conversion:</label>
+                            <label for="custom_prompt">Prompt for This Conversion:</label>
                             <textarea class="form-control" id="custom_prompt" name="custom_prompt" rows="10" form="conversionForm">{{ prompt_content }}</textarea>
+                            <small class="form-text text-muted">Edit the prompt for this conversion only. Required if using a custom prompt.</small>
                         </div>
                     </div>
                 </div>
@@ -80,6 +82,10 @@
 function toggleTemplateUpload() {
     var templateUpload = document.getElementById('templateUpload');
     templateUpload.style.display = templateUpload.style.display === 'none' ? 'block' : 'none';
+    document.getElementById('template_name').value = '';
+    document.getElementById('prompt_name_group').style.display = 'block';
+    document.getElementById('prompt_name').value = 'Custom';
+    document.getElementById('custom_prompt').value = '';
 }
 $(document).ready(function() {
     if ($('#template_name').val()) {
