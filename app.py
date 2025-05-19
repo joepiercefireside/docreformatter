@@ -214,10 +214,11 @@ def logout():
     flash('You have been logged out.', 'success')
     return redirect(url_for('login'))
 
-# Client creation route
+# Client creation and deletion routes
 @app.route('/create_client', methods=['GET', 'POST'])
 @login_required
 def create_client():
+    clients = get_clients(current_user.id)
     if request.method == 'POST':
         try:
             client_id = request.form.get('client_id').strip()
@@ -226,7 +227,6 @@ def create_client():
                 return redirect(url_for('create_client'))
             conn = get_db_connection()
             cur = conn.cursor()
-            # Insert a minimal record to register the client
             cur.execute(
                 "INSERT INTO settings (user_id, client_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
                 (current_user.id, client_id)
@@ -241,7 +241,28 @@ def create_client():
             logger.error(f"Error creating client: {str(e)}")
             flash('Failed to create client', 'danger')
             return redirect(url_for('create_client'))
-    return render_template('create_client.html')
+    return render_template('create_client.html', clients=clients)
+
+@app.route('/delete_client/<client_id>', methods=['POST'])
+@login_required
+def delete_client(client_id):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM settings WHERE user_id = %s AND client_id = %s",
+            (current_user.id, client_id)
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        if session.get('selected_client') == client_id:
+            session.pop('selected_client', None)
+        flash(f'Client {client_id} deleted successfully', 'success')
+    except Exception as e:
+        logger.error(f"Error deleting client: {str(e)}")
+        flash('Failed to delete client', 'danger')
+    return redirect(url_for('create_client'))
 
 # Prompt creation/editing route
 @app.route('/create_prompt', methods=['GET', 'POST'])
@@ -294,7 +315,15 @@ def create_prompt():
                 flash('Prompt content cannot be empty', 'danger')
                 return redirect(url_for('create_prompt', client_id=client_id))
             try:
-                save_prompt(prompt_content, client_id, current_user.id, prompt_name)
+                conn = get_db_connection()
+                cur = conn.cursor()
+                cur.execute(
+                    "UPDATE settings SET prompt = %s WHERE user_id = %s AND client_id = %s AND prompt_name = %s",
+                    (Json({'prompt': prompt_content}), current_user.id, client_id, prompt_name)
+                )
+                conn.commit()
+                cur.close()
+                conn.close()
                 flash(f'Prompt "{prompt_name}" updated successfully', 'success')
                 return redirect(url_for('create_prompt', client_id=client_id))
             except Exception as e:
@@ -351,8 +380,13 @@ def create_template():
         client_id = request.form.get('client_id', '').strip()
         template_name = request.form.get('template_name', '').strip()
         prompt_name = request.form.get('prompt_name', '').strip()
+        prompt_name_new = request.form.get('prompt_name_new', '').strip()
         prompt_content = request.form.get('prompt_content', '').strip()
         template_file = request.files.get('template_file')
+        
+        # Use new prompt name if provided
+        if prompt_name_new and prompt_content:
+            prompt_name = prompt_name_new
         
         if action == 'create':
             if not template_name:
@@ -361,8 +395,8 @@ def create_template():
             if not template_file or not template_file.filename.endswith('.docx'):
                 flash('Valid .docx template file required', 'danger')
                 return redirect(url_for('create_template', client_id=client_id))
-            if not prompt_name and not (prompt_content and prompt_name):
-                flash('Please select an existing prompt or create a new one', 'danger')
+            if not prompt_name:
+                flash('Please select an existing prompt or provide a new one', 'danger')
                 return redirect(url_for('create_template', client_id=client_id))
             try:
                 conn = get_db_connection()
@@ -377,6 +411,17 @@ def create_template():
                     cur.close()
                     conn.close()
                     return redirect(url_for('create_template', client_id=client_id))
+                # Check if prompt name exists
+                if prompt_name_new:
+                    cur.execute(
+                        "SELECT id FROM settings WHERE user_id = %s AND client_id = %s AND prompt_name = %s",
+                        (current_user.id, client_id, prompt_name)
+                    )
+                    if cur.fetchone():
+                        flash(f'Prompt "{prompt_name}" already exists for this client', 'danger')
+                        cur.close()
+                        conn.close()
+                        return redirect(url_for('create_template', client_id=client_id))
                 # Save prompt if provided
                 if prompt_content and prompt_name:
                     save_prompt(prompt_content, client_id, current_user.id, prompt_name)
@@ -395,14 +440,35 @@ def create_template():
             if not template_name:
                 flash('Template name cannot be empty', 'danger')
                 return redirect(url_for('create_template', client_id=client_id))
-            if not prompt_name and not (prompt_content and prompt_name):
-                flash('Please select an existing prompt or create a new one', 'danger')
+            if not prompt_name:
+                flash('Please select an existing prompt or provide a new one', 'danger')
                 return redirect(url_for('create_template', client_id=client_id))
             try:
-                if template_file and template_file.filename.endswith('.docx'):
-                    save_template(template_file, client_id, current_user.id, prompt_name, template_name)
+                conn = get_db_connection()
+                cur = conn.cursor()
+                if prompt_name_new:
+                    cur.execute(
+                        "SELECT id FROM settings WHERE user_id = %s AND client_id = %s AND prompt_name = %s",
+                        (current_user.id, client_id, prompt_name)
+                    )
+                    if cur.fetchone():
+                        flash(f'Prompt "{prompt_name}" already exists for this client', 'danger')
+                        cur.close()
+                        conn.close()
+                        return redirect(url_for('create_template', client_id=client_id))
                 if prompt_content and prompt_name:
                     save_prompt(prompt_content, client_id, current_user.id, prompt_name)
+                if template_file and template_file.filename.endswith('.docx'):
+                    save_template(template_file, client_id, current_user.id, prompt_name, template_name)
+                else:
+                    # Update prompt_name without changing template
+                    cur.execute(
+                        "UPDATE settings SET prompt_name = %s WHERE user_id = %s AND client_id = %s AND template_name = %s",
+                        (prompt_name, current_user.id, client_id, template_name)
+                    )
+                    conn.commit()
+                cur.close()
+                conn.close()
                 flash(f'Template "{template_name}" updated successfully', 'success')
                 return redirect(url_for('create_template', client_id=client_id))
             except Exception as e:
@@ -763,7 +829,7 @@ def save_template(file, client_id, user_id, prompt_name, template_name):
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO settings (user_id, client_id, template, prompt_name, template_name) VALUES (%s, %s, %s, %s, %s) ON CONFLICT ON CONSTRAINT settings_unique_user_client_prompt_template DO UPDATE SET template = EXCLUDED.template",
+            "INSERT INTO settings (user_id, client_id, template, prompt_name, template_name) VALUES (%s, %s, %s, %s, %s) ON CONFLICT ON CONSTRAINT settings_unique_user_client_prompt_template DO UPDATE SET template = EXCLUDED.template, prompt_name = EXCLUDED.prompt_name",
             (user_id, client_id, file_data, prompt_name, template_name)
         )
         conn.commit()

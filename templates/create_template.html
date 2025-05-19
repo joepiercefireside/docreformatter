@@ -43,7 +43,7 @@
         {% endif %}
         <h3>{% if selected_template %}Edit Template{% else %}Create New Template{% endif %}</h3>
         <form method="POST" enctype="multipart/form-data">
-            <input type="hidden" name="action" value="{% if selected_template %}update{% else %}create{% endif %}">
+            <input type="hidden" name="action" id="action" value="{% if selected_template %}update{% else %}create{% endif %}">
             <input type="hidden" name="client_id" value="{{ selected_client }}">
             <div class="form-group">
                 <label for="template_name">Template Name:</label>
@@ -59,19 +59,19 @@
                 </select>
             </div>
             <div class="form-group">
-                <label for="prompt_content">New Prompt Content (if not selecting existing):</label>
-                <textarea class="form-control" id="prompt_content" name="prompt_content" rows="5"></textarea>
-                <small class="form-text text-muted">Required if not selecting an existing prompt.</small>
-            </div>
-            <div class="form-group">
                 <label for="prompt_name_new">New Prompt Name (if creating new):</label>
                 <input type="text" class="form-control" id="prompt_name_new" name="prompt_name_new">
                 <small class="form-text text-muted">Required if creating a new prompt.</small>
             </div>
             <div class="form-group">
+                <label for="prompt_content">New Prompt Content (if not selecting existing):</label>
+                <textarea class="form-control" id="prompt_content" name="prompt_content" rows="5"></textarea>
+                <small class="form-text text-muted">Required if creating a new prompt.</small>
+            </div>
+            <div class="form-group">
                 <label for="template_file">Upload Template (.docx):</label>
                 <input type="file" class="form-control-file" id="template_file" name="template_file" accept=".docx" {% if not selected_template %}required{% endif %}>
-                <small class="form-text text-muted">Optional when editing an existing template.</small>
+                <small class="form-text text-muted">{% if selected_template %}Optional: leave blank to keep existing file.{% else %}Required for new templates.{% endif %}</small>
             </div>
             <button type="submit" class="btn btn-primary">{% if selected_template %}Update Template{% else %}Create Template{% endif %}</button>
         </form>
@@ -81,7 +81,9 @@
 function editTemplate(templateName, promptName) {
     document.getElementById('template_name').value = templateName;
     document.getElementById('prompt_name').value = promptName;
-    document.querySelector('input[name="action"]').value = 'update';
+    document.getElementById('action').value = 'update';
+    document.getElementById('prompt_name_new').value = '';
+    document.getElementById('prompt_content').value = '';
     loadPromptContentForTemplate();
 }
 
@@ -106,6 +108,7 @@ function loadPromptContentForTemplate() {
             },
             error: function() {
                 document.getElementById('prompt_content').value = '';
+                alert('Error loading prompt content');
             }
         });
     } else {

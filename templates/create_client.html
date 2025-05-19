@@ -4,7 +4,33 @@
 {% block content %}
 <div class="card shadow-sm">
     <div class="card-body">
-        <h1 class="card-title mb-4">Create New Client</h1>
+        <h1 class="card-title mb-4">Create/Edit Clients</h1>
+        <h3>Existing Clients</h3>
+        {% if clients %}
+            <table class="table table-bordered">
+                <thead>
+                    <tr>
+                        <th>Client ID</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for client in clients %}
+                        <tr>
+                            <td>{{ client }}</td>
+                            <td>
+                                <form method="POST" action="{{ url_for('delete_client', client_id=client) }}" style="display:inline;">
+                                    <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Are you sure you want to delete {{ client }}? This will remove all associated prompts and templates.');">Delete</button>
+                                </form>
+                            </td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        {% else %}
+            <p>No clients found.</p>
+        {% endif %}
+        <h3>Create New Client</h3>
         <form method="POST">
             <div class="form-group">
                 <label for="client_id">Client ID:</label>
