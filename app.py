@@ -470,18 +470,21 @@ def create_template():
                     save_prompt(prompt_content, client_id, current_user.id, prompt_name)
                 # Update template
                 if template_file and template_file.filename.endswith('.docx'):
-                    save_template(template_file, client_id, current_user.id, prompt_name, template_name)
+                    cur.execute(
+                        "UPDATE settings SET template = %s, prompt_name = %s, template_name = %s WHERE user_id = %s AND client_id = %s AND template_name = %s",
+                        (template_file.read(), prompt_name, template_name, current_user.id, client_id, original_template_name)
+                    )
                 else:
                     cur.execute(
                         "UPDATE settings SET prompt_name = %s, template_name = %s WHERE user_id = %s AND client_id = %s AND template_name = %s",
                         (prompt_name, template_name, current_user.id, client_id, original_template_name)
                     )
-                    if cur.rowcount == 0:
-                        flash(f'Template "{original_template_name}" not found for update', 'danger')
-                        cur.close()
-                        conn.close()
-                        return redirect(url_for('create_template', client_id=client_id))
-                    conn.commit()
+                if cur.rowcount == 0:
+                    flash(f'Template "{original_template_name}" not found for update', 'danger')
+                    cur.close()
+                    conn.close()
+                    return redirect(url_for('create_template', client_id=client_id))
+                conn.commit()
                 cur.close()
                 conn.close()
                 flash(f'Template "{template_name}" updated successfully', 'success')
@@ -510,6 +513,34 @@ def create_template():
     logger.info(f"Templates for client {selected_client or 'global'}: {templates}")
     
     return render_template('create_template.html', clients=clients, selected_client=selected_client, templates=templates, prompts=prompts)
+
+# Template deletion route
+@app.route('/delete_template', methods=['POST'])
+@login_required
+def delete_template():
+    try:
+        client_id = request.form.get('client_id', '').strip()
+        template_name = request.form.get('template_name').strip()
+        if not template_name:
+            return jsonify({'success': False, 'error': 'Template name is required'}), 400
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM settings WHERE user_id = %s AND client_id = %s AND template_name = %s AND template IS NOT NULL",
+            (current_user.id, client_id, template_name)
+        )
+        if cur.rowcount == 0:
+            cur.close()
+            conn.close()
+            return jsonify({'success': False, 'error': 'Template not found'}), 404
+        conn.commit()
+        cur.close()
+        conn.close()
+        logger.info(f"Deleted template '{template_name}' for client {client_id or 'global'}, user {current_user.id}")
+        return jsonify({'success': True}), 200
+    except Exception as e:
+        logger.error(f"Error deleting template: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 # Prompt management routes
 @app.route('/load_prompts', methods=['POST'])

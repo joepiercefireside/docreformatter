@@ -22,6 +22,7 @@
                     <tr>
                         <th>Template Name</th>
                         <th>Associated Prompt</th>
+                        <th>File Status</th>
                         <th>Actions</th>
                     </tr>
                 </thead>
@@ -30,8 +31,10 @@
                         <tr>
                             <td>{{ template.template_name }}</td>
                             <td>{{ template.prompt_name }}</td>
+                            <td>Has File</td>
                             <td>
                                 <button class="btn btn-sm btn-primary" onclick='editTemplate("{{ template.template_name | safe }}", "{{ template.prompt_name | safe }}", {{ prompts | selectattr("prompt_name", "equalto", template.prompt_name) | map(attribute="prompt_content") | first | default("") | tojson | safe }})'>Edit</button>
+                                <button class="btn btn-sm btn-danger" onclick='deleteTemplate("{{ template.template_name | safe }}", "{{ selected_client | safe }}")'>Delete</button>
                             </td>
                         </tr>
                     {% endfor %}
@@ -43,7 +46,7 @@
         <h3 id="form-title">Create New Template</h3>
         <form method="POST" enctype="multipart/form-data" id="template-form">
             <input type="hidden" name="action" id="action" value="create">
-            <input type="hidden" name="client_id" value="{{ selected_client }}">
+            <input type="hidden" name="client_id" id="client_id_form" value="{{ selected_client }}">
             <input type="hidden" name="original_template_name" id="original_template_name" value="">
             <div class="form-group">
                 <label for="template_name">Template Name:</label>
@@ -71,7 +74,7 @@
             <div class="form-group">
                 <label for="template_file">Upload Template (.docx):</label>
                 <input type="file" class="form-control-file" id="template_file" name="template_file" accept=".docx" {% if not selected_template %}required{% endif %}>
-                <small class="form-text text-muted">{% if selected_template %}Optional: leave blank to keep existing file.{% else %}Required for new templates.{% endif %}</small>
+                <small id="file-status" class="form-text text-muted">{% if selected_template %}Optional: leave blank to keep existing file. File: Present{% else %}Required for new templates.{% endif %}</small>
             </div>
             <div id="create-button" style="display: block;">
                 <button type="submit" class="btn btn-primary">Create Template</button>
@@ -95,16 +98,47 @@ function editTemplate(templateName, promptName, promptContent) {
     document.getElementById('create-button').style.display = 'none';
     document.getElementById('edit-buttons').style.display = 'block';
     document.getElementById('template_file').required = false;
+    document.getElementById('file-status').textContent = 'Optional: leave blank to keep existing file. File: Present';
 }
 
 function cancelEdit() {
-    document.getElementById('template-form').reset();
+    const form = document.getElementById('template-form');
+    const isDirty = Array.from(form.elements).some(element => {
+        if (element.type === 'file') return element.files.length > 0;
+        if (element.type === 'submit' || element.type === 'button') return false;
+        return element.value !== (element.defaultValue || '');
+    });
+    if (isDirty && !confirm('You have unsaved changes. Are you sure you want to cancel?')) {
+        return;
+    }
+    form.reset();
     document.getElementById('action').value = 'create';
     document.getElementById('original_template_name').value = '';
     document.getElementById('form-title').textContent = 'Create New Template';
     document.getElementById('create-button').style.display = 'block';
     document.getElementById('edit-buttons').style.display = 'none';
     document.getElementById('template_file').required = true;
+    document.getElementById('file-status').textContent = 'Required for new templates.';
+}
+
+function deleteTemplate(templateName, clientId) {
+    if (confirm(`Are you sure you want to delete the template "${templateName}"?`)) {
+        fetch('/delete_template', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `client_id=${encodeURIComponent(clientId)}&template_name=${encodeURIComponent(templateName)}`
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                alert('Template deleted successfully');
+                window.location.reload();
+            } else {
+                alert(`Failed to delete template: ${data.error}`);
+            }
+        })
+        .catch(error => alert(`Error deleting template: ${error}`));
+    }
 }
 
 function clearNewPromptFields() {
