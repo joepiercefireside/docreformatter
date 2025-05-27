@@ -1,4 +1,3 @@
-<!DOCTYPE html>
 {% extends "base.html" %}
 {% block title %}Create Prompts{% endblock %}
 {% block content %}
@@ -30,7 +29,7 @@
                         <tr>
                             <td>{{ prompt.prompt_name }}</td>
                             <td>
-                                <button class="btn btn-sm btn-primary" onclick="editPrompt('{{ prompt.prompt_name }}', '{{ prompt.prompt_content | safe }}')">Edit</button>
+                                <button class="btn btn-sm btn-primary" onclick="editPrompt('{{ prompt.prompt_name | safe }}', '{{ prompt.prompt_content | safe }}')">Edit</button>
                             </td>
                         </tr>
                     {% endfor %}
@@ -39,8 +38,8 @@
         {% else %}
             <p>No prompts found for {% if selected_client %}{{ selected_client }}{% else %}global use{% endif %}.</p>
         {% endif %}
-        <h3>{% if selected_prompt %}Edit Prompt{% else %}Create New Prompt{% endif %}</h3>
-        <form method="POST">
+        <h3 id="form-title">{% if selected_prompt %}Edit Prompt{% else %}Create New Prompt{% endif %}</h3>
+        <form method="POST" id="prompt-form">
             <input type="hidden" name="action" id="action" value="create">
             <input type="hidden" name="client_id" value="{{ selected_client }}">
             <div class="form-group">
@@ -51,7 +50,13 @@
                 <label for="prompt_content">Prompt Content:</label>
                 <textarea class="form-control" id="prompt_content" name="prompt_content" rows="5" required></textarea>
             </div>
-            <button type="submit" class="btn btn-primary" id="submitButton">{% if selected_prompt %}Update Prompt{% else %}Create Prompt{% endif %}</button>
+            <div id="create-button" style="display: block;">
+                <button type="submit" class="btn btn-primary">Create Prompt</button>
+            </div>
+            <div id="edit-buttons" style="display: none;">
+                <button type="submit" class="btn btn-primary">Save Changes</button>
+                <button type="button" class="btn btn-secondary" onclick="cancelEdit()">Cancel</button>
+            </div>
         </form>
     </div>
 </div>
@@ -60,7 +65,32 @@ function editPrompt(promptName, promptContent) {
     document.getElementById('prompt_name').value = promptName;
     document.getElementById('prompt_content').value = promptContent;
     document.getElementById('action').value = 'update';
-    document.getElementById('submitButton').textContent = 'Update Prompt';
+    document.getElementById('form-title').textContent = 'Edit Prompt';
+    document.getElementById('create-button').style.display = 'none';
+    document.getElementById('edit-buttons').style.display = 'block';
 }
+
+function cancelEdit() {
+    document.getElementById('prompt_form').reset();
+    document.getElementById('action').value = 'create';
+    document.getElementById('form-title').textContent = 'Create New Prompt';
+    document.getElementById('create-button').style.display = 'block';
+    document.getElementById('edit-buttons').style.display = 'none';
+}
+
+// Client-side validation to warn about potential duplicates
+document.getElementById('prompt-form').addEventListener('submit', function(event) {
+    var promptName = document.getElementById('prompt_name').value.trim();
+    var existingPrompts = [
+        {% for prompt in prompts %}
+            '{{ prompt.prompt_name | safe }}',
+        {% endfor %}
+    ];
+    var action = document.getElementById('action').value;
+    if (action === 'create' && existingPrompts.includes(promptName)) {
+        alert('A prompt with this name already exists for this client. Please choose a different name.');
+        event.preventDefault();
+    }
+});
 </script>
 {% endblock %}
