@@ -255,6 +255,7 @@ def create_prompt():
         client_id = request.form.get('client_id', '').strip()
         prompt_name = request.form.get('prompt_name', '').strip()
         prompt_content = request.form.get('prompt_content', '').strip()
+        original_prompt_name = request.form.get('original_prompt_name', prompt_name).strip()
         
         if action == 'create':
             if not prompt_name:
@@ -295,21 +296,27 @@ def create_prompt():
             try:
                 conn = get_db_connection()
                 cur = conn.cursor()
-                # Check if prompt_name exists for another prompt
-                cur.execute(
-                    "SELECT id FROM settings WHERE user_id = %s AND client_id = %s AND prompt_name = %s AND prompt_name != %s",
-                    (current_user.id, client_id, prompt_name, request.form.get('original_prompt_name', prompt_name))
-                )
-                if cur.fetchone():
-                    flash(f'Prompt "{prompt_name}" already exists for this client', 'danger')
-                    cur.close()
-                    conn.close()
-                    return redirect(url_for('create_prompt', client_id=client_id))
+                # Check if new prompt_name conflicts with another prompt
+                if prompt_name != original_prompt_name:
+                    cur.execute(
+                        "SELECT id FROM settings WHERE user_id = %s AND client_id = %s AND prompt_name = %s",
+                        (current_user.id, client_id, prompt_name)
+                    )
+                    if cur.fetchone():
+                        flash(f'Prompt "{prompt_name}" already exists for this client', 'danger')
+                        cur.close()
+                        conn.close()
+                        return redirect(url_for('create_prompt', client_id=client_id))
                 # Update the prompt
                 cur.execute(
                     "UPDATE settings SET prompt = %s, prompt_name = %s WHERE user_id = %s AND client_id = %s AND prompt_name = %s",
-                    (Json({'prompt': prompt_content}), prompt_name, current_user.id, client_id, request.form.get('original_prompt_name', prompt_name))
+                    (Json({'prompt': prompt_content}), prompt_name, current_user.id, client_id, original_prompt_name)
                 )
+                if cur.rowcount == 0:
+                    flash(f'Prompt "{original_prompt_name}" not found for update', 'danger')
+                    cur.close()
+                    conn.close()
+                    return redirect(url_for('create_prompt', client_id=client_id))
                 conn.commit()
                 cur.close()
                 conn.close()
@@ -330,7 +337,7 @@ def create_prompt():
         )
     else:
         cur.execute(
-            "SELECT prompt_name, prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND (client_id = '' OR client_id IS NULL) AND prompt IS NOT NULL",
+            "SELECT prompt_name, prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND client_id = '' AND prompt IS NOT NULL",
             (current_user.id,)
         )
     prompts = [{'prompt_name': row[0], 'prompt_content': row[1] or ''} for row in cur.fetchall()]
@@ -359,7 +366,7 @@ def create_template():
         )
     else:
         cur.execute(
-            "SELECT prompt_name, prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND (client_id = '' OR client_id IS NULL) AND prompt IS NOT NULL",
+            "SELECT prompt_name, prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND client_id = '' AND prompt IS NOT NULL",
             (current_user.id,)
         )
     prompts = [{'prompt_name': row[0], 'prompt_content': row[1] or ''} for row in cur.fetchall()]
@@ -438,7 +445,7 @@ def create_template():
         )
     else:
         cur.execute(
-            "SELECT template_name, prompt_name FROM settings WHERE user_id = %s AND (client_id = '' OR client_id IS NULL) AND template IS NOT NULL",
+            "SELECT template_name, prompt_name FROM settings WHERE user_id = %s AND client_id = '' AND template IS NOT NULL",
             (current_user.id,)
         )
     templates = [{'template_name': row[0], 'prompt_name': row[1]} for row in cur.fetchall()]
@@ -463,7 +470,7 @@ def load_prompts():
             )
         else:
             cur.execute(
-                "SELECT prompt_name, prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND (client_id = '' OR client_id IS NULL) AND prompt IS NOT NULL",
+                "SELECT prompt_name, prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND client_id = '' AND prompt IS NOT NULL",
                 (current_user.id,)
             )
         prompts = [{'prompt_name': row[0], 'prompt_content': row[1] or ''} for row in cur.fetchall()]
@@ -489,7 +496,7 @@ def load_templates():
             )
         else:
             cur.execute(
-                "SELECT template_name, prompt_name FROM settings WHERE user_id = %s AND (client_id = '' OR client_id IS NULL) AND template IS NOT NULL",
+                "SELECT template_name, prompt_name FROM settings WHERE user_id = %s AND client_id = '' AND template IS NOT NULL",
                 (current_user.id,)
             )
         templates = [{'template_name': row[0], 'prompt_name': row[1]} for row in cur.fetchall()]
@@ -643,8 +650,7 @@ def index():
             """
             SELECT template_name, prompt_name 
             FROM settings 
-            WHERE user_id = %s AND (client_id = %s OR client_id = '' OR client_id IS NULL) 
-            AND template IS NOT NULL
+            WHERE user_id = %s AND client_id = %s AND template IS NOT NULL
             """,
             (current_user.id, selected_client)
         )
@@ -654,8 +660,7 @@ def index():
             """
             SELECT prompt_name, prompt->'prompt' AS prompt_content 
             FROM settings 
-            WHERE user_id = %s AND (client_id = %s OR client_id = '' OR client_id IS NULL) 
-            AND prompt IS NOT NULL
+            WHERE user_id = %s AND client_id = %s AND prompt IS NOT NULL
             """,
             (current_user.id, selected_client)
         )
@@ -706,7 +711,7 @@ def load_prompt(client_id=None, user_id=None, prompt_name=None):
             )
         else:
             cur.execute(
-                "SELECT prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND (client_id = '' OR client_id IS NULL) AND prompt IS NOT NULL ORDER BY created_at DESC LIMIT 1",
+                "SELECT prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND client_id = '' AND prompt IS NOT NULL ORDER BY created_at DESC LIMIT 1",
                 (user_id,)
             )
         result = cur.fetchone()
@@ -808,7 +813,7 @@ def load_template(output_path, client_id=None, user_id=None, template_name=None)
             )
         else:
             cur.execute(
-                "SELECT template FROM settings WHERE user_id = %s AND (client_id = '' OR client_id IS NULL) AND template IS NOT NULL ORDER BY created_at DESC LIMIT 1",
+                "SELECT template FROM settings WHERE user_id = %s AND client_id = '' AND template IS NOT NULL ORDER BY created_at DESC LIMIT 1",
                 (user_id,)
             )
         result = cur.fetchone()

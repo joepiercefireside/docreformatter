@@ -29,7 +29,7 @@
                         <tr>
                             <td>{{ prompt.prompt_name }}</td>
                             <td>
-                                <button class="btn btn-sm btn-primary" onclick="editPrompt('{{ prompt.prompt_name | safe }}', '{{ prompt.prompt_content | safe }}')">Edit</button>
+                                <button class="btn btn-sm btn-primary" onclick='editPrompt("{{ prompt.prompt_name | safe }}", {{ prompt.prompt_content | tojson | safe }})'>Edit</button>
                             </td>
                         </tr>
                     {% endfor %}
@@ -38,10 +38,11 @@
         {% else %}
             <p>No prompts found for {% if selected_client %}{{ selected_client }}{% else %}global use{% endif %}.</p>
         {% endif %}
-        <h3 id="form-title">{% if selected_prompt %}Edit Prompt{% else %}Create New Prompt{% endif %}</h3>
+        <h3 id="form-title">Create New Prompt</h3>
         <form method="POST" id="prompt-form">
             <input type="hidden" name="action" id="action" value="create">
             <input type="hidden" name="client_id" value="{{ selected_client }}">
+            <input type="hidden" name="original_prompt_name" id="original_prompt_name" value="">
             <div class="form-group">
                 <label for="prompt_name">Prompt Name:</label>
                 <input type="text" class="form-control" id="prompt_name" name="prompt_name" required>
@@ -64,6 +65,7 @@
 function editPrompt(promptName, promptContent) {
     document.getElementById('prompt_name').value = promptName;
     document.getElementById('prompt_content').value = promptContent;
+    document.getElementById('original_prompt_name').value = promptName;
     document.getElementById('action').value = 'update';
     document.getElementById('form-title').textContent = 'Edit Prompt';
     document.getElementById('create-button').style.display = 'none';
@@ -71,14 +73,14 @@ function editPrompt(promptName, promptContent) {
 }
 
 function cancelEdit() {
-    document.getElementById('prompt_form').reset();
+    document.getElementById('prompt-form').reset();
     document.getElementById('action').value = 'create';
+    document.getElementById('original_prompt_name').value = '';
     document.getElementById('form-title').textContent = 'Create New Prompt';
     document.getElementById('create-button').style.display = 'block';
     document.getElementById('edit-buttons').style.display = 'none';
 }
 
-// Client-side validation to warn about potential duplicates
 document.getElementById('prompt-form').addEventListener('submit', function(event) {
     var promptName = document.getElementById('prompt_name').value.trim();
     var existingPrompts = [
