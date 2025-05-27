@@ -691,11 +691,21 @@ def load_client():
         if template_name:
             prompt = load_prompt_for_template(client_id, current_user.id, template_name)
             prompt_name = get_prompt_name_for_template(client_id, current_user.id, template_name)
-            return jsonify({'prompt': prompt, 'prompt_name': prompt_name or ''}), 200
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT template IS NOT NULL AS has_file FROM settings WHERE user_id = %s AND client_id = %s AND template_name = %s AND template IS NOT NULL LIMIT 1",
+                (current_user.id, client_id, template_name)
+            )
+            result = cur.fetchone()
+            has_file = result[0] if result else False
+            cur.close()
+            conn.close()
+            return jsonify({'prompt': prompt, 'prompt_name': prompt_name or 'Custom', 'has_file': has_file}), 200
         elif prompt_name and prompt_name != 'Custom':
             prompt = load_prompt(client_id, current_user.id, prompt_name)
-            return jsonify({'prompt': prompt, 'prompt_name': prompt_name}), 200
-        return jsonify({'prompt': '', 'prompt_name': 'Custom'}), 200
+            return jsonify({'prompt': prompt, 'prompt_name': prompt_name, 'has_file': False}), 200
+        return jsonify({'prompt': '', 'prompt_name': 'Custom', 'has_file': False}), 200
     except Exception as e:
         logger.error(f"Error loading client: {str(e)}")
         return jsonify({'error': 'Failed to load client'}), 500
@@ -711,6 +721,7 @@ def index():
     prompt_content = ""
     templates = []
     prompts = []
+    has_template_file = False
 
     if request.method == 'POST':
         action = request.form.get('action')
@@ -735,6 +746,16 @@ def index():
                 prompt_content = load_prompt_for_template(selected_client or '', current_user.id, template_name)
                 session['selected_prompt'] = prompt_name or 'Custom'
                 selected_prompt = prompt_name or 'Custom'
+                conn = get_db_connection()
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT template IS NOT NULL AS has_file FROM settings WHERE user_id = %s AND client_id = %s AND template_name = %s AND template IS NOT NULL LIMIT 1",
+                    (current_user.id, selected_client or '', template_name)
+                )
+                result = cur.fetchone()
+                has_template_file = result[0] if result else False
+                cur.close()
+                conn.close()
                 flash(f'Selected template: {template_name}', 'success')
             else:
                 session.pop('selected_template', None)
@@ -835,8 +856,18 @@ def index():
     if selected_template:
         prompt_content = load_prompt_for_template(selected_client or '', current_user.id, selected_template)
         selected_prompt = get_prompt_name_for_template(selected_client or '', current_user.id, selected_template) or 'Custom'
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT template IS NOT NULL AS has_file FROM settings WHERE user_id = %s AND client_id = %s AND template_name = %s AND template IS NOT NULL LIMIT 1",
+            (current_user.id, selected_client or '', selected_template)
+        )
+        result = cur.fetchone()
+        has_template_file = result[0] if result else False
+        cur.close()
+        conn.close()
 
-    return render_template('index.html', clients=clients, selected_client=selected_client, templates=templates, prompts=prompts, selected_template=selected_template, selected_prompt=selected_prompt, prompt_content=prompt_content)
+    return render_template('index.html', clients=clients, selected_client=selected_client, templates=templates, prompts=prompts, selected_template=selected_template, selected_prompt=selected_prompt, prompt_content=prompt_content, has_template_file=has_template_file)
 
 # Existing functionality
 AI_API_URL = os.environ.get('AI_API_URL', 'https://api.openai.com/v1/chat/completions')

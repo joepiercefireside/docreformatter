@@ -43,6 +43,7 @@
                     <div class="form-group">
                         <label id="template_file_label" for="template_file">Upload One-Time Template:</label>
                         <input type="file" class="form-control-file" id="template_file" name="template_file" accept=".docx">
+                        <span id="template_file_status" class="form-text text-muted" style="display: {% if has_template_file %}inline{% else %}none{% endif %};">File Selected</span>
                     </div>
                     <button type="submit" class="btn btn-primary">Reformat Document</button>
                 </div>
@@ -88,13 +89,30 @@ function updatePromptContent() {
     }
 }
 
-function updateTemplateLabel() {
+function updateTemplateLabelAndStatus() {
     const templateName = document.getElementById('template_name').value;
     const label = document.getElementById('template_file_label');
+    const status = document.getElementById('template_file_status');
     label.textContent = templateName ? 'Change File Template' : 'Upload One-Time Template';
+    if (templateName) {
+        fetch('/load_client', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `client_id=${encodeURIComponent('{{ selected_client | safe }}')}&template_name=${encodeURIComponent(templateName)}`
+        })
+        .then(response => response.json())
+        .then(data => {
+            status.style.display = data.has_file ? 'inline' : 'none';
+            document.getElementById('prompt_name').value = data.prompt_name || 'Custom';
+            document.getElementById('custom_prompt').value = data.prompt || '';
+        })
+        .catch(error => console.error('Error loading template:', error));
+    } else {
+        status.style.display = 'none';
+    }
 }
 
-document.getElementById('template_name').addEventListener('change', updateTemplateLabel);
-document.addEventListener('DOMContentLoaded', updateTemplateLabel);
+document.getElementById('template_name').addEventListener('change', updateTemplateLabelAndStatus);
+document.addEventListener('DOMContentLoaded', updateTemplateLabelAndStatus);
 </script>
 {% endblock %}
