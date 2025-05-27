@@ -218,29 +218,84 @@ def logout():
 @app.route('/create_client', methods=['GET', 'POST'])
 @login_required
 def create_client():
+    clients = get_clients(current_user.id)
+    selected_client = request.args.get('selected_client', '')
+    prompts = []
+    templates = []
+
+    if selected_client:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        # Load prompts
+        cur.execute(
+            "SELECT prompt_name, prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND client_id = %s AND prompt IS NOT NULL",
+            (current_user.id, selected_client)
+        )
+        prompts = [{'prompt_name': row[0], 'prompt_content': row[1] or ''} for row in cur.fetchall()]
+        # Load templates
+        cur.execute(
+            "SELECT template_name, prompt_name FROM settings WHERE user_id = %s AND client_id = %s AND template IS NOT NULL",
+            (current_user.id, selected_client)
+        )
+        templates = [{'template_name': row[0], 'prompt_name': row[1]} for row in cur.fetchall()]
+        cur.close()
+        conn.close()
+        logger.info(f"Loaded prompts for client {selected_client}: {prompts}")
+        logger.info(f"Loaded templates for client {selected_client}: {templates}")
+
     if request.method == 'POST':
-        try:
-            client_id = request.form.get('client_id').strip()
+        action = request.form.get('action')
+        client_id = request.form.get('client_id', '').strip()
+
+        if action == 'create':
             if not client_id:
                 flash('Client ID cannot be empty', 'danger')
                 return redirect(url_for('create_client'))
-            conn = get_db_connection()
-            cur = conn.cursor()
-            cur.execute(
-                "INSERT INTO settings (user_id, client_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
-                (current_user.id, client_id)
-            )
-            conn.commit()
+            try:
+                conn = get_db_connection()
+                cur = conn.cursor()
+                cur.execute(
+                    "INSERT INTO settings (user_id, client_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                    (current_user.id, client_id)
+                )
+                conn.commit()
+                cur.close()
+                conn.close()
+                flash(f'Client {client_id} created successfully', 'success')
+                return redirect(url_for('create_client', selected_client=client_id))
+            except Exception as e:
+                logger.error(f"Error creating client: {str(e)}")
+                flash(f'Failed to create client: {str(e)}', 'danger')
+                return redirect(url_for('create_client'))
+
+    return render_template('create_client.html', clients=clients, selected_client=selected_client, prompts=prompts, templates=templates)
+
+# Delete client route
+@app.route('/delete_client', methods=['POST'])
+@login_required
+def delete_client():
+    try:
+        client_id = request.form.get('client_id').strip()
+        if not client_id:
+            return jsonify({'success': False, 'error': 'Client ID is required'}), 400
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM settings WHERE user_id = %s AND client_id = %s",
+            (current_user.id, client_id)
+        )
+        if cur.rowcount == 0:
             cur.close()
             conn.close()
-            session['selected_client'] = client_id
-            flash(f'Client {client_id} created successfully', 'success')
-            return redirect(url_for('index'))
-        except Exception as e:
-            logger.error(f"Error creating client: {str(e)}")
-            flash('Failed to create client', 'danger')
-            return redirect(url_for('create_client'))
-    return render_template('create_client.html')
+            return jsonify({'success': False, 'error': 'Client not found'}), 404
+        conn.commit()
+        cur.close()
+        conn.close()
+        logger.info(f"Deleted client '{client_id}' for user {current_user.id}")
+        return jsonify({'success': True}), 200
+    except Exception as e:
+        logger.error(f"Error deleting client: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 # Prompt creation/editing route
 @app.route('/create_prompt', methods=['GET', 'POST'])
@@ -296,7 +351,6 @@ def create_prompt():
             try:
                 conn = get_db_connection()
                 cur = conn.cursor()
-                # Check if new prompt_name conflicts with another prompt
                 if prompt_name != original_prompt_name:
                     cur.execute(
                         "SELECT id FROM settings WHERE user_id = %s AND client_id = %s AND prompt_name = %s",
@@ -307,7 +361,6 @@ def create_prompt():
                         cur.close()
                         conn.close()
                         return redirect(url_for('create_prompt', client_id=client_id))
-                # Update the prompt
                 cur.execute(
                     "UPDATE settings SET prompt = %s, prompt_name = %s WHERE user_id = %s AND client_id = %s AND prompt_name = %s",
                     (Json({'prompt': prompt_content}), prompt_name, current_user.id, client_id, original_prompt_name)
@@ -540,6 +593,34 @@ def delete_template():
         return jsonify({'success': True}), 200
     except Exception as e:
         logger.error(f"Error deleting template: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+# Prompt deletion route
+@app.route('/delete_prompt', methods=['POST'])
+@login_required
+def delete_prompt():
+    try:
+        client_id = request.form.get('client_id', '').strip()
+        prompt_name = request.form.get('prompt_name').strip()
+        if not prompt_name:
+            return jsonify({'success': False, 'error': 'Prompt name is required'}), 400
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM settings WHERE user_id = %s AND client_id = %s AND prompt_name = %s AND prompt IS NOT NULL",
+            (current_user.id, client_id, prompt_name)
+        )
+        if cur.rowcount == 0:
+            cur.close()
+            conn.close()
+            return jsonify({'success': False, 'error': 'Prompt not found'}), 404
+        conn.commit()
+        cur.close()
+        conn.close()
+        logger.info(f"Deleted prompt '{prompt_name}' for client {client_id or 'global'}, user {current_user.id}")
+        return jsonify({'success': True}), 200
+    except Exception as e:
+        logger.error(f"Error deleting prompt: {str(e)}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 # Prompt management routes

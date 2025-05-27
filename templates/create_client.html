@@ -1,37 +1,84 @@
-<!DOCTYPE html>
 {% extends "base.html" %}
-{% block title %}Create Client{% endblock %}
+{% block title %}Create/Edit Clients{% endblock %}
 {% block content %}
 <div class="card shadow-sm">
     <div class="card-body">
         <h1 class="card-title mb-4">Create/Edit Clients</h1>
         <h3>Existing Clients</h3>
         {% if clients %}
-            <table class="table table-bordered">
-                <thead>
-                    <tr>
-                        <th>Client ID</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for client in clients %}
-                        <tr>
-                            <td>{{ client }}</td>
-                            <td>
-                                <form method="POST" action="{{ url_for('delete_client', client_id=client) }}" style="display:inline;">
-                                    <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Are you sure you want to delete {{ client }}? This will remove all associated prompts and templates.');">Delete</button>
-                                </form>
-                            </td>
-                        </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+            <form method="GET" action="{{ url_for('create_client') }}">
+                <div class="form-group">
+                    <label for="selected_client">Select Client:</label>
+                    <select class="form-control" id="selected_client" name="selected_client" onchange="this.form.submit()">
+                        <option value="">Select a client</option>
+                        {% for client in clients %}
+                            <option value="{{ client }}" {% if client == selected_client %}selected{% endif %}>{{ client }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </form>
+            {% if selected_client %}
+                <h4>Details for {{ selected_client }}</h4>
+                <div class="mb-3">
+                    <button class="btn btn-danger" onclick="deleteClient('{{ selected_client | safe }}')">Delete Client</button>
+                </div>
+                <h5>Prompts</h5>
+                {% if prompts %}
+                    <table class="table table-bordered">
+                        <thead>
+                            <tr>
+                                <th>Prompt Name</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for prompt in prompts %}
+                                <tr>
+                                    <td>{{ prompt.prompt_name }}</td>
+                                    <td>
+                                        <button class="btn btn-sm btn-primary" onclick="editPrompt('{{ selected_client | safe }}', '{{ prompt.prompt_name | safe }}')">Edit</button>
+                                        <button class="btn btn-sm btn-danger" onclick="deletePrompt('{{ selected_client | safe }}', '{{ prompt.prompt_name | safe }}')">Delete</button>
+                                    </td>
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                {% else %}
+                    <p>No prompts found for {{ selected_client }}.</p>
+                {% endif %}
+                <h5>Templates</h5>
+                {% if templates %}
+                    <table class="table table-bordered">
+                        <thead>
+                            <tr>
+                                <th>Template Name</th>
+                                <th>Associated Prompt</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for template in templates %}
+                                <tr>
+                                    <td>{{ template.template_name }}</td>
+                                    <td>{{ template.prompt_name }}</td>
+                                    <td>
+                                        <button class="btn btn-sm btn-primary" onclick="editTemplate('{{ selected_client | safe }}', '{{ template.template_name | safe }}')">Edit</button>
+                                        <button class="btn btn-sm btn-danger" onclick="deleteTemplate('{{ selected_client | safe }}', '{{ template.template_name | safe }}')">Delete</button>
+                                    </td>
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                {% else %}
+                    <p>No templates found for {{ selected_client }}.</p>
+                {% endif %}
+            {% endif %}
         {% else %}
             <p>No clients found.</p>
         {% endif %}
         <h3>Create New Client</h3>
-        <form method="POST">
+        <form method="POST" id="client-form">
+            <input type="hidden" name="action" value="create">
             <div class="form-group">
                 <label for="client_id">Client ID:</label>
                 <input type="text" class="form-control" id="client_id" name="client_id" required>
@@ -40,4 +87,73 @@
         </form>
     </div>
 </div>
+<script>
+function editPrompt(clientId, promptName) {
+    window.location.href = `/create_prompt?client_id=${encodeURIComponent(clientId)}&edit_prompt=${encodeURIComponent(promptName)}`;
+}
+
+function editTemplate(clientId, templateName) {
+    window.location.href = `/create_template?client_id=${encodeURIComponent(clientId)}&edit_template=${encodeURIComponent(templateName)}`;
+}
+
+function deletePrompt(clientId, promptName) {
+    if (confirm(`Are you sure you want to delete the prompt "${promptName}" for client "${clientId}"?`)) {
+        fetch('/delete_prompt', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `client_id=${encodeURIComponent(clientId)}&prompt_name=${encodeURIComponent(promptName)}`
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                alert('Prompt deleted successfully');
+                window.location.reload();
+            } else {
+                alert(`Failed to delete prompt: ${data.error}`);
+            }
+        })
+        .catch(error => alert(`Error deleting prompt: ${error}`));
+    }
+}
+
+function deleteTemplate(clientId, templateName) {
+    if (confirm(`Are you sure you want to delete the template "${templateName}" for client "${clientId}"?`)) {
+        fetch('/delete_template', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `client_id=${encodeURIComponent(clientId)}&template_name=${encodeURIComponent(templateName)}`
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                alert('Template deleted successfully');
+                window.location.reload();
+            } else {
+                alert(`Failed to delete template: ${data.error}`);
+            }
+        })
+        .catch(error => alert(`Error deleting template: ${error}`));
+    }
+}
+
+function deleteClient(clientId) {
+    if (confirm(`Are you sure you want to delete the client "${clientId}" and all associated prompts and templates?`)) {
+        fetch('/delete_client', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `client_id=${encodeURIComponent(clientId)}`
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                alert('Client deleted successfully');
+                window.location.href = '/create_client';
+            } else {
+                alert(`Failed to delete client: ${data.error}`);
+            }
+        })
+        .catch(error => alert(`Error deleting client: ${error}`));
+    }
+}
+</script>
 {% endblock %}
