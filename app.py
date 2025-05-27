@@ -270,33 +270,6 @@ def create_client():
 
     return render_template('create_client.html', clients=clients, selected_client=selected_client, prompts=prompts, templates=templates)
 
-# Delete client route
-@app.route('/delete_client', methods=['POST'])
-@login_required
-def delete_client():
-    try:
-        client_id = request.form.get('client_id').strip()
-        if not client_id:
-            return jsonify({'success': False, 'error': 'Client ID is required'}), 400
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute(
-            "DELETE FROM settings WHERE user_id = %s AND client_id = %s",
-            (current_user.id, client_id)
-        )
-        if cur.rowcount == 0:
-            cur.close()
-            conn.close()
-            return jsonify({'success': False, 'error': 'Client not found'}), 404
-        conn.commit()
-        cur.close()
-        conn.close()
-        logger.info(f"Deleted client '{client_id}' for user {current_user.id}")
-        return jsonify({'success': True}), 200
-    except Exception as e:
-        logger.error(f"Error deleting client: {str(e)}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
 # Prompt creation/editing route
 @app.route('/create_prompt', methods=['GET', 'POST'])
 @login_required
