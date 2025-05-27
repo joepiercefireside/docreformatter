@@ -1,96 +1,100 @@
-<!DOCTYPE html>
 {% extends "base.html" %}
 {% block title %}Document Reformatter{% endblock %}
 {% block content %}
 <div class="card shadow-sm">
     <div class="card-body">
         <h1 class="card-title mb-4">Document Reformatter</h1>
-        <div class="row">
-            <div class="col-md-6">
-                <div class="card border-light mb-3">
-                    <div class="card-body">
-                        <form method="POST" enctype="multipart/form-data">
-                            <input type="hidden" name="action" value="select_client">
-                            <div class="form-group">
-                                <label for="client_id">Select Client:</label>
-                                <select class="form-control" id="client_id" name="client_id" onchange="this.form.submit()">
-                                    <option value="">Select a client</option>
-                                    {% for client in clients %}
-                                        <option value="{{ client }}" {% if client == selected_client %}selected{% endif %}>{{ client }}</option>
-                                    {% endfor %}
-                                </select>
-                            </div>
-                        </form>
-                        {% if selected_client %}
-                            <form method="POST" enctype="multipart/form-data" id="conversionForm">
-                                <input type="hidden" name="action" value="upload_document">
-                                <div class="form-group">
-                                    <label for="template_name">Select Template:</label>
-                                    <select class="form-control" id="template_name" name="template_name" onchange="loadTemplateContent()">
-                                        <option value="">Select a template or upload one-time</option>
-                                        {% for template in templates %}
-                                            <option value="{{ template.template_name }}" {% if template.template_name == selected_template %}selected{% endif %}>{{ template.template_name }}</option>
-                                        {% endfor %}
-                                    </select>
-                                </div>
-                                <div class="form-group" id="prompt_name_group" style="display: {% if selected_template %}none{% else %}block{% endif %};">
-                                    <label for="prompt_name">Select Prompt:</label>
-                                    <select class="form-control" id="prompt_name" name="prompt_name" onchange="loadPromptContent()">
-                                        <option value="Custom" {% if selected_prompt == 'Custom' %}selected{% endif %}>Custom</option>
-                                        {% for prompt in prompts %}
-                                            <option value="{{ prompt.prompt_name }}" {% if prompt.prompt_name == selected_prompt %}selected{% endif %}>{{ prompt.prompt_name }}</option>
-                                        {% endfor %}
-                                    </select>
-                                    <small class="form-text text-muted">Select "Custom" to enter a new prompt below.</small>
-                                </div>
-                                <div class="form-group">
-                                    <label for="document_file">Upload Document (.docx):</label>
-                                    <input type="file" class="form-control-file" id="document_file" name="document_file" accept=".docx" required>
-                                </div>
-                                <button type="button" class="btn btn-outline-secondary mb-3" onclick="toggleTemplateUpload()">Upload One-Time Template</button>
-                                <div id="templateUpload" style="display: none;">
-                                    <div class="form-group">
-                                        <label for="template_file">Upload Template (.docx):</label>
-                                        <input type="file" class="form-control-file" id="template_file" name="template_file" accept=".docx">
-                                    </div>
-                                </div>
-                                <button type="submit" class="btn btn-primary">Reformat Document</button>
-                            </form>
-                        {% endif %}
+        <form method="POST" enctype="multipart/form-data" id="reformat-form">
+            <input type="hidden" name="action" id="action" value="upload_document">
+            <div class="row">
+                <div class="col-md-6">
+                    <div class="form-group">
+                        <label for="client_id">Select Client:</label>
+                        <select class="form-control" id="client_id" name="client_id" onchange="submitAction('select_client')">
+                            <option value="">Select a client</option>
+                            {% for client in clients %}
+                                <option value="{{ client }}" {% if client == selected_client %}selected{% endif %}>{{ client }}</option>
+                            {% endfor %}
+                        </select>
                     </div>
+                    <div class="form-group">
+                        <label for="template_name">Select Template:</label>
+                        <select class="form-control" id="template_name" name="template_name" onchange="submitAction('select_template')">
+                            <option value="">Select a template or upload one-time</option>
+                            {% for template in templates %}
+                                <option value="{{ template.template_name }}" {% if template.template_name == selected_template %}selected{% endif %}>{{ template.template_name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="prompt_name">Select Prompt:</label>
+                        <select class="form-control" id="prompt_name" name="prompt_name" onchange="updatePromptContent()">
+                            <option value="Custom" {% if selected_prompt == 'Custom' %}selected{% endif %}>Custom</option>
+                            {% for prompt in prompts %}
+                                <option value="{{ prompt.prompt_name }}" {% if prompt.prompt_name == selected_prompt %}selected{% endif %}>{{ prompt.prompt_name }}</option>
+                            {% endfor %}
+                        </select>
+                        <small class="form-text text-muted">Select "Custom" to enter a new prompt below.</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="document_file">Upload Document to Convert:</label>
+                        <input type="file" class="form-control-file" id="document_file" name="document_file" accept=".docx" required>
+                    </div>
+                    <div class="form-group">
+                        <label id="template_file_label" for="template_file">Upload One-Time Template:</label>
+                        <input type="file" class="form-control-file" id="template_file" name="template_file" accept=".docx">
+                    </div>
+                    <button type="submit" class="btn btn-primary">Reformat Document</button>
                 </div>
-            </div>
-            <div class="col-md-6">
-                <div class="card border-light mb-3">
-                    <div class="card-body">
-                        <h4 class="card-title">Prompt Content</h4>
-                        <div class="form-group">
-                            <label for="custom_prompt">Prompt for This Conversion:</label>
-                            <textarea class="form-control" id="custom_prompt" name="custom_prompt" rows="10" form="conversionForm">{{ prompt_content }}</textarea>
-                            <small class="form-text text-muted">Edit the prompt for this conversion only. Required if using a custom prompt.</small>
+                <div class="col-md-6">
+                    <div class="form-group">
+                        <label>Prompt Content</label>
+                        <div class="card">
+                            <div class="card-body">
+                                <h5 class="card-title">Prompt for This Conversion:</h5>
+                                <textarea class="form-control" id="custom_prompt" name="custom_prompt" rows="10">{{ prompt_content }}</textarea>
+                                <small class="form-text text-muted">Edit the prompt for this conversion only. Required if using a custom prompt.</small>
+                            </div>
                         </div>
                     </div>
                 </div>
             </div>
-        </div>
+        </form>
     </div>
 </div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/main.js') }}"></script>
 <script>
-function toggleTemplateUpload() {
-    var templateUpload = document.getElementById('templateUpload');
-    templateUpload.style.display = templateUpload.style.display === 'none' ? 'block' : 'none';
-    document.getElementById('template_name').value = '';
-    document.getElementById('prompt_name_group').style.display = 'block';
-    document.getElementById('prompt_name').value = 'Custom';
-    document.getElementById('custom_prompt').value = '';
+function submitAction(action) {
+    document.getElementById('action').value = action;
+    document.getElementById('reformat-form').submit();
 }
-$(document).ready(function() {
-    if ($('#template_name').val()) {
-        loadTemplateContent();
+
+function updatePromptContent() {
+    const promptName = document.getElementById('prompt_name').value;
+    if (promptName !== 'Custom') {
+        fetch('/load_client', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `client_id=${encodeURIComponent('{{ selected_client | safe }}')}&prompt_name=${encodeURIComponent(promptName)}`
+        })
+        .then(response => response.json())
+        .then(data => {
+            document.getElementById('custom_prompt').value = data.prompt || '';
+        })
+        .catch(error => console.error('Error loading prompt:', error));
+    } else {
+        document.getElementById('custom_prompt').value = '';
     }
-});
+}
+
+function updateTemplateLabel() {
+    const templateName = document.getElementById('template_name').value;
+    const label = document.getElementById('template_file_label');
+    label.textContent = templateName ? 'Change File Template' : 'Upload One-Time Template';
+}
+
+document.getElementById('template_name').addEventListener('change', updateTemplateLabel);
+document.addEventListener('DOMContentLoaded', updateTemplateLabel);
 </script>
 {% endblock %}

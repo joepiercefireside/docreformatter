@@ -303,6 +303,7 @@ def delete_client():
 def create_prompt():
     clients = get_clients(current_user.id)
     selected_client = request.args.get('client_id', '')
+    edit_prompt = request.args.get('edit_prompt', '')
     prompts = []
     
     if request.method == 'POST':
@@ -385,7 +386,7 @@ def create_prompt():
     cur = conn.cursor()
     if selected_client:
         cur.execute(
-            "SELECT prompt_name, prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND client_id = %s AND prompt IS NOT NULL",
+            "SELECT prompt_name, prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND (client_id = %s OR client_id = '') AND prompt IS NOT NULL",
             (current_user.id, selected_client)
         )
     else:
@@ -398,7 +399,7 @@ def create_prompt():
     conn.close()
     logger.info(f"Prompts for client {selected_client or 'global'}: {prompts}")
     
-    return render_template('create_prompt.html', clients=clients, selected_client=selected_client, prompts=prompts, selected_prompt=None)
+    return render_template('create_prompt.html', clients=clients, selected_client=selected_client, prompts=prompts, selected_prompt=edit_prompt)
 
 # Template creation/editing route
 @app.route('/create_template', methods=['GET', 'POST'])
@@ -406,6 +407,7 @@ def create_prompt():
 def create_template():
     clients = get_clients(current_user.id)
     selected_client = request.args.get('client_id', '')
+    edit_template = request.args.get('edit_template', '')
     templates = []
     prompts = []
     
@@ -414,7 +416,7 @@ def create_template():
     cur = conn.cursor()
     if selected_client:
         cur.execute(
-            "SELECT prompt_name, prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND client_id = %s AND prompt IS NOT NULL",
+            "SELECT prompt_name, prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND (client_id = %s OR client_id = '') AND prompt IS NOT NULL",
             (current_user.id, selected_client)
         )
     else:
@@ -552,7 +554,7 @@ def create_template():
     cur = conn.cursor()
     if selected_client:
         cur.execute(
-            "SELECT template_name, prompt_name FROM settings WHERE user_id = %s AND client_id = %s AND template IS NOT NULL",
+            "SELECT template_name, prompt_name FROM settings WHERE user_id = %s AND (client_id = %s OR client_id = '') AND template IS NOT NULL",
             (current_user.id, selected_client)
         )
     else:
@@ -565,7 +567,7 @@ def create_template():
     conn.close()
     logger.info(f"Templates for client {selected_client or 'global'}: {templates}")
     
-    return render_template('create_template.html', clients=clients, selected_client=selected_client, templates=templates, prompts=prompts)
+    return render_template('create_template.html', clients=clients, selected_client=selected_client, templates=templates, prompts=prompts, selected_template=edit_template)
 
 # Template deletion route
 @app.route('/delete_template', methods=['POST'])
@@ -623,6 +625,33 @@ def delete_prompt():
         logger.error(f"Error deleting prompt: {str(e)}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
+# Client deletion route
+@app.route('/delete_client', methods=['POST'])
+@login_required
+def delete_client():
+    try:
+        client_id = request.form.get('client_id').strip()
+        if not client_id:
+            return jsonify({'success': False, 'error': 'Client ID is required'}), 400
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM settings WHERE user_id = %s AND client_id = %s",
+            (current_user.id, client_id)
+        )
+        if cur.rowcount == 0:
+            cur.close()
+            conn.close()
+            return jsonify({'success': False, 'error': 'Client not found'}), 404
+        conn.commit()
+        cur.close()
+        conn.close()
+        logger.info(f"Deleted client '{client_id}' for user {current_user.id}")
+        return jsonify({'success': True}), 200
+    except Exception as e:
+        logger.error(f"Error deleting client: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 # Prompt management routes
 @app.route('/load_prompts', methods=['POST'])
 @login_required
@@ -633,7 +662,7 @@ def load_prompts():
         cur = conn.cursor()
         if client_id:
             cur.execute(
-                "SELECT prompt_name, prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND client_id = %s AND prompt IS NOT NULL",
+                "SELECT prompt_name, prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND (client_id = %s OR client_id = '') AND prompt IS NOT NULL",
                 (current_user.id, client_id)
             )
         else:
@@ -659,7 +688,7 @@ def load_templates():
         cur = conn.cursor()
         if client_id:
             cur.execute(
-                "SELECT template_name, prompt_name FROM settings WHERE user_id = %s AND client_id = %s AND template IS NOT NULL",
+                "SELECT template_name, prompt_name FROM settings WHERE user_id = %s AND (client_id = %s OR client_id = '') AND template IS NOT NULL",
                 (current_user.id, client_id)
             )
         else:
@@ -703,8 +732,6 @@ def load_client():
 @login_required
 def index():
     clients = get_clients(current_user.id)
-    logger.info(f"Clients for user {current_user.id}: {clients}")
-    
     selected_client = session.get('selected_client')
     selected_template = session.get('selected_template')
     selected_prompt = session.get('selected_prompt', 'Custom')
@@ -714,49 +741,59 @@ def index():
 
     if request.method == 'POST':
         action = request.form.get('action')
-        client_id = request.form.get('client_id')
-        
-        if action == 'select_client' and client_id in clients:
-            session['selected_client'] = client_id
+        client_id = request.form.get('client_id', '')
+
+        if action == 'select_client':
+            session['selected_client'] = client_id if client_id in clients else None
             session.pop('selected_template', None)
             session.pop('selected_prompt', None)
-            selected_client = client_id
+            selected_client = client_id if client_id in clients else None
             selected_template = None
             selected_prompt = 'Custom'
-            flash(f'Selected client: {client_id}', 'success')
-        
+            if client_id:
+                flash(f'Selected client: {client_id}', 'success')
+
+        elif action == 'select_template':
+            template_name = request.form.get('template_name')
+            if template_name:
+                session['selected_template'] = template_name
+                selected_template = template_name
+                prompt_name = get_prompt_name_for_template(selected_client or '', current_user.id, template_name)
+                prompt_content = load_prompt_for_template(selected_client or '', current_user.id, template_name)
+                session['selected_prompt'] = prompt_name or 'Custom'
+                selected_prompt = prompt_name or 'Custom'
+                flash(f'Selected template: {template_name}', 'success')
+            else:
+                session.pop('selected_template', None)
+                session.pop('selected_prompt', None)
+                selected_template = None
+                selected_prompt = 'Custom'
+                prompt_content = ""
+
         elif action == 'upload_document':
             document_file = request.files.get('document_file')
             template_name = request.form.get('template_name')
             prompt_name = request.form.get('prompt_name', 'Custom')
             custom_prompt = request.form.get('custom_prompt', '').strip()
             template_file = request.files.get('template_file')
-            
+
             if not document_file or not document_file.filename.endswith('.docx'):
                 flash('Valid .docx document required', 'danger')
                 return redirect(url_for('index'))
-            
-            if not selected_client:
-                flash('Please select a client', 'danger')
-                return redirect(url_for('index'))
-            
-            if not template_name and not template_file:
-                flash('Please select a template or upload a one-time template', 'danger')
-                return redirect(url_for('index'))
-            
+
             if prompt_name == 'Custom' and not custom_prompt:
                 flash('Please enter a custom prompt or select an existing one', 'danger')
                 return redirect(url_for('index'))
-            
+
             filename = secure_filename(document_file.filename)
             input_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
             output_path = os.path.join(app.config['UPLOAD_FOLDER'], f"reformatted_{filename}")
             document_file.save(input_path)
             content = extract_content_from_docx(input_path)
-            
+
             # Handle prompt
-            ai_prompt = custom_prompt if custom_prompt else load_prompt_for_template(selected_client, current_user.id, template_name) if template_name else load_prompt(selected_client, current_user.id, prompt_name) if prompt_name != 'Custom' else DEFAULT_AI_PROMPT
-            
+            ai_prompt = custom_prompt if custom_prompt else load_prompt_for_template(selected_client or '', current_user.id, template_name) if template_name else load_prompt(selected_client or '', current_user.id, prompt_name) if prompt_name != 'Custom' else DEFAULT_AI_PROMPT
+
             # Handle template
             temp_template_path = os.path.join(app.config['UPLOAD_FOLDER'], 'temp_template.docx')
             template_used = False
@@ -764,8 +801,8 @@ def index():
                 template_file.save(temp_template_path)
                 template_used = True
             elif template_name:
-                template_used = load_template(temp_template_path, selected_client, current_user.id, template_name)
-            
+                template_used = load_template(temp_template_path, selected_client or '', current_user.id, template_name)
+
             sections = call_ai_api(content, selected_client, current_user.id, prompt_name, custom_prompt=ai_prompt)
             if "error" in sections:
                 flash(f"AI processing failed: {sections['error']}", 'danger')
@@ -781,26 +818,9 @@ def index():
                 os.remove(temp_template_path)
             os.remove(output_path)
             return response
-        
-        elif action == 'select_template':
-            template_name = request.form.get('template_name')
-            if template_name:
-                session['selected_template'] = template_name
-                selected_template = template_name
-                prompt_content = load_prompt_for_template(selected_client, current_user.id, template_name)
-                prompt_name = get_prompt_name_for_template(selected_client, current_user.id, template_name)
-                session['selected_prompt'] = prompt_name or 'Custom'
-                selected_prompt = prompt_name or 'Custom'
-                flash(f'Selected template: {template_name}', 'success')
-            else:
-                session.pop('selected_template', None)
-                session.pop('selected_prompt', None)
-                selected_template = None
-                selected_prompt = 'Custom'
-                prompt_content = ""
 
     # Handle GET with query parameter
-    client_id = request.args.get('client_id')
+    client_id = request.args.get('client_id', '')
     if client_id and client_id in clients:
         session['selected_client'] = client_id
         session.pop('selected_template', None)
@@ -809,46 +829,41 @@ def index():
         selected_template = None
         selected_prompt = 'Custom'
 
-    # Load templates and prompts for selected client or global
+    # Load templates and prompts
+    conn = get_db_connection()
+    cur = conn.cursor()
     if selected_client:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        # Load templates
         cur.execute(
-            """
-            SELECT template_name, prompt_name 
-            FROM settings 
-            WHERE user_id = %s AND client_id = %s AND template IS NOT NULL
-            """,
+            "SELECT template_name, prompt_name FROM settings WHERE user_id = %s AND (client_id = %s OR client_id = '') AND template IS NOT NULL",
             (current_user.id, selected_client)
         )
         templates = [{'template_name': row[0], 'prompt_name': row[1]} for row in cur.fetchall()]
-        # Load prompts
         cur.execute(
-            """
-            SELECT prompt_name, prompt->'prompt' AS prompt_content 
-            FROM settings 
-            WHERE user_id = %s AND client_id = %s AND prompt IS NOT NULL
-            """,
+            "SELECT prompt_name, prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND (client_id = %s OR client_id = '') AND prompt IS NOT NULL",
             (current_user.id, selected_client)
         )
         prompts = [{'prompt_name': row[0], 'prompt_content': row[1] or ''} for row in cur.fetchall()]
-        cur.close()
-        conn.close()
-        logger.info(f"Templates for client {selected_client}: {templates}")
-        logger.info(f"Prompts for client {selected_client}: {prompts}")
-        if selected_template:
-            prompt_content = load_prompt_for_template(selected_client, current_user.id, selected_template)
-            selected_prompt = get_prompt_name_for_template(selected_client, current_user.id, selected_template) or 'Custom'
+    else:
+        cur.execute(
+            "SELECT template_name, prompt_name FROM settings WHERE user_id = %s AND client_id = '' AND template IS NOT NULL",
+            (current_user.id,)
+        )
+        templates = [{'template_name': row[0], 'prompt_name': row[1]} for row in cur.fetchall()]
+        cur.execute(
+            "SELECT prompt_name, prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND client_id = '' AND prompt IS NOT NULL",
+            (current_user.id,)
+        )
+        prompts = [{'prompt_name': row[0], 'prompt_content': row[1] or ''} for row in cur.fetchall()]
+    cur.close()
+    conn.close()
+    logger.info(f"Templates for client {selected_client or 'global'}: {templates}")
+    logger.info(f"Prompts for client {selected_client or 'global'}: {prompts}")
 
-    return render_template('index.html', 
-                         clients=clients, 
-                         selected_client=selected_client, 
-                         templates=templates, 
-                         prompts=prompts, 
-                         selected_template=selected_template, 
-                         selected_prompt=selected_prompt, 
-                         prompt_content=prompt_content)
+    if selected_template:
+        prompt_content = load_prompt_for_template(selected_client or '', current_user.id, selected_template)
+        selected_prompt = get_prompt_name_for_template(selected_client or '', current_user.id, selected_template) or 'Custom'
+
+    return render_template('index.html', clients=clients, selected_client=selected_client, templates=templates, prompts=prompts, selected_template=selected_template, selected_prompt=selected_prompt, prompt_content=prompt_content)
 
 # Existing functionality
 AI_API_URL = os.environ.get('AI_API_URL', 'https://api.openai.com/v1/chat/completions')
