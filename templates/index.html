@@ -43,6 +43,7 @@
                     <div class="form-group">
                         <label id="template_file_label" for="template_file">Upload One-Time Template:</label>
                         <input type="file" class="form-control-file" id="template_file" name="template_file" accept=".docx">
+                        <span id="file-name" class="form-text text-muted">{{ selected_template + '.docx' if selected_template else '' }}</span>
                         <span id="template_file_status" class="form-text text-success" style="display: {% if has_template_file %}inline{% else %}none{% endif %};">File Selected</span>
                     </div>
                     <button type="submit" class="btn btn-primary">Reformat Document</button>
@@ -95,6 +96,7 @@ function updateTemplateLabelAndStatus() {
     const clientId = document.getElementById('client_id').value || '';
     const label = document.getElementById('template_file_label');
     const status = document.getElementById('template_file_status');
+    const fileName = document.getElementById('file-name');
     
     label.textContent = templateName ? 'Change File Template' : 'Upload One-Time Template';
     
@@ -109,16 +111,19 @@ function updateTemplateLabelAndStatus() {
             status.style.display = data.has_file ? 'inline-block' : 'none';
             document.getElementById('prompt_name').value = data.prompt_name || 'Custom';
             document.getElementById('custom_prompt').value = data.prompt || '';
+            fileName.textContent = data.has_file ? `${templateName}.docx` : '';
         })
         .catch(error => {
             console.error('Error loading template:', error);
             status.style.display = 'none';
             document.getElementById('prompt_name').value = 'Custom';
+            fileName.textContent = '';
         });
     } else {
         status.style.display = 'none';
         document.getElementById('prompt_name').value = 'Custom';
         document.getElementById('custom_prompt').value = '';
+        fileName.textContent = '';
     }
 }
 

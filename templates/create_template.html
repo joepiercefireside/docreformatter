@@ -74,6 +74,7 @@
             <div class="form-group">
                 <label for="template_file">Upload Template (.docx):</label>
                 <input type="file" class="form-control-file" id="template_file" name="template_file" accept=".docx" {% if not selected_template %}required{% endif %}>
+                <span id="file-name" class="form-text text-muted"></span>
                 <small id="file-status" class="form-text text-muted">{% if selected_template %}Optional: leave blank to keep existing file. File: Present{% else %}Required for new templates.{% endif %}</small>
             </div>
             <div id="create-button" style="display: block;">
@@ -99,6 +100,7 @@ function editTemplate(templateName, promptName, promptContent) {
     document.getElementById('edit-buttons').style.display = 'block';
     document.getElementById('template_file').required = false;
     document.getElementById('file-status').textContent = 'Optional: leave blank to keep existing file. File: Present';
+    document.getElementById('file-name').textContent = `Current file: ${templateName}.docx`;
 }
 
 function cancelEdit() {
@@ -119,6 +121,7 @@ function cancelEdit() {
     document.getElementById('edit-buttons').style.display = 'none';
     document.getElementById('template_file').required = true;
     document.getElementById('file-status').textContent = 'Required for new templates.';
+    document.getElementById('file-name').textContent = '';
 }
 
 function deleteTemplate(templateName, clientId) {

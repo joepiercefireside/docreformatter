@@ -447,11 +447,30 @@ def create_template():
                         cur.close()
                         conn.close()
                         return redirect(url_for('create_template', client_id=client_id))
-                # Save prompt if provided
-                if prompt_content and prompt_name:
                     save_prompt(prompt_content, client_id, current_user.id, prompt_name)
+                # Fetch existing prompt_content for selected prompt
+                prompt_json = None
+                if prompt_name and not prompt_name_new:
+                    cur.execute(
+                        "SELECT prompt FROM settings WHERE user_id = %s AND (client_id = %s OR client_id = '') AND prompt_name = %s AND prompt IS NOT NULL LIMIT 1",
+                        (current_user.id, client_id, prompt_name)
+                    )
+                    result = cur.fetchone()
+                    if result:
+                        prompt_json = result[0]
+                    else:
+                        flash(f'Prompt "{prompt_name}" not found', 'danger')
+                        cur.close()
+                        conn.close()
+                        return redirect(url_for('create_template', client_id=client_id))
                 # Save template
-                save_template(template_file, client_id, current_user.id, prompt_name, template_name)
+                file_data = template_file.read()
+                cur.execute(
+                    "INSERT INTO settings (user_id, client_id, prompt, prompt_name, template, template_name) "
+                    "VALUES (%s, %s, %s, %s, %s, %s)",
+                    (current_user.id, client_id, prompt_json, prompt_name, file_data, template_name)
+                )
+                conn.commit()
                 flash(f'Template "{template_name}" created successfully', 'success')
                 cur.close()
                 conn.close()
@@ -493,19 +512,29 @@ def create_template():
                         cur.close()
                         conn.close()
                         return redirect(url_for('create_template', client_id=client_id))
-                # Save prompt if provided
-                if prompt_content and prompt_name:
                     save_prompt(prompt_content, client_id, current_user.id, prompt_name)
+                # Fetch existing prompt_content for selected prompt
+                prompt_json = None
+                if prompt_name and not prompt_name_new:
+                    cur.execute(
+                        "SELECT prompt FROM settings WHERE user_id = %s AND (client_id = %s OR client_id = '') AND prompt_name = %s AND prompt IS NOT NULL LIMIT 1",
+                        (current_user.id, client_id, prompt_name)
+                    )
+                    result = cur.fetchone()
+                    if result:
+                        prompt_json = result[0]
                 # Update template
                 if template_file and template_file.filename.endswith('.docx'):
                     cur.execute(
-                        "UPDATE settings SET template = %s, prompt_name = %s, template_name = %s WHERE user_id = %s AND client_id = %s AND template_name = %s",
-                        (template_file.read(), prompt_name, template_name, current_user.id, client_id, original_template_name)
+                        "UPDATE settings SET template = %s, prompt = %s, prompt_name = %s, template_name = %s "
+                        "WHERE user_id = %s AND client_id = %s AND template_name = %s",
+                        (template_file.read(), prompt_json, prompt_name, template_name, current_user.id, client_id, original_template_name)
                     )
                 else:
                     cur.execute(
-                        "UPDATE settings SET prompt_name = %s, template_name = %s WHERE user_id = %s AND client_id = %s AND template_name = %s",
-                        (prompt_name, template_name, current_user.id, client_id, original_template_name)
+                        "UPDATE settings SET prompt = %s, prompt_name = %s, template_name = %s "
+                        "WHERE user_id = %s AND client_id = %s AND template_name = %s",
+                        (prompt_json, prompt_name, template_name, current_user.id, client_id, original_template_name)
                     )
                 if cur.rowcount == 0:
                     flash(f'Template "{original_template_name}" not found for update', 'danger')
