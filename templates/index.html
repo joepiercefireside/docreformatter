@@ -43,7 +43,7 @@
                     <div class="form-group">
                         <label id="template_file_label" for="template_file">Upload One-Time Template:</label>
                         <input type="file" class="form-control-file" id="template_file" name="template_file" accept=".docx">
-                        <span id="template_file_status" class="form-text text-muted" style="display: {% if has_template_file %}inline{% else %}none{% endif %};">File Selected</span>
+                        <span id="template_file_status" class="form-text text-success" style="display: {% if has_template_file %}inline{% else %}none{% endif %};">File Selected</span>
                     </div>
                     <button type="submit" class="btn btn-primary">Reformat Document</button>
                 </div>
@@ -73,11 +73,12 @@ function submitAction(action) {
 
 function updatePromptContent() {
     const promptName = document.getElementById('prompt_name').value;
+    const clientId = document.getElementById('client_id').value || '';
     if (promptName !== 'Custom') {
         fetch('/load_client', {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: `client_id=${encodeURIComponent('{{ selected_client | safe }}')}&prompt_name=${encodeURIComponent(promptName)}`
+            body: `client_id=${encodeURIComponent(clientId)}&prompt_name=${encodeURIComponent(promptName)}`
         })
         .then(response => response.json())
         .then(data => {
@@ -91,14 +92,17 @@ function updatePromptContent() {
 
 function updateTemplateLabelAndStatus() {
     const templateName = document.getElementById('template_name').value;
+    const clientId = document.getElementById('client_id').value || '';
     const label = document.getElementById('template_file_label');
     const status = document.getElementById('template_file_status');
+    
     label.textContent = templateName ? 'Change File Template' : 'Upload One-Time Template';
+    
     if (templateName) {
         fetch('/load_client', {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: `client_id=${encodeURIComponent('{{ selected_client | safe }}')}&template_name=${encodeURIComponent(templateName)}`
+            body: `client_id=${encodeURIComponent(clientId)}&template_name=${encodeURIComponent(templateName)}`
         })
         .then(response => response.json())
         .then(data => {
@@ -106,9 +110,15 @@ function updateTemplateLabelAndStatus() {
             document.getElementById('prompt_name').value = data.prompt_name || 'Custom';
             document.getElementById('custom_prompt').value = data.prompt || '';
         })
-        .catch(error => console.error('Error loading template:', error));
+        .catch(error => {
+            console.error('Error loading template:', error);
+            status.style.display = 'none';
+            document.getElementById('prompt_name').value = 'Custom';
+        });
     } else {
         status.style.display = 'none';
+        document.getElementById('prompt_name').value = 'Custom';
+        document.getElementById('custom_prompt').value = '';
     }
 }
 

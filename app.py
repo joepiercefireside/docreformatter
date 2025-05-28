@@ -686,15 +686,15 @@ def load_client():
         client_id = data.get('client_id', '')
         template_name = data.get('template_name')
         prompt_name = data.get('prompt_name')
-        if not client_id:
-            return jsonify({'error': 'Client ID missing'}), 400
+        if not client_id and template_name:
+            return jsonify({'error': 'Client ID required for template'}), 400
         if template_name:
             prompt = load_prompt_for_template(client_id, current_user.id, template_name)
             prompt_name = get_prompt_name_for_template(client_id, current_user.id, template_name)
             conn = get_db_connection()
             cur = conn.cursor()
             cur.execute(
-                "SELECT template IS NOT NULL AS has_file FROM settings WHERE user_id = %s AND client_id = %s AND template_name = %s AND template IS NOT NULL LIMIT 1",
+                "SELECT template IS NOT NULL AS has_file FROM settings WHERE user_id = %s AND client_id = %s AND template_name = %s LIMIT 1",
                 (current_user.id, client_id, template_name)
             )
             result = cur.fetchone()
@@ -749,7 +749,7 @@ def index():
                 conn = get_db_connection()
                 cur = conn.cursor()
                 cur.execute(
-                    "SELECT template IS NOT NULL AS has_file FROM settings WHERE user_id = %s AND client_id = %s AND template_name = %s AND template IS NOT NULL LIMIT 1",
+                    "SELECT template IS NOT NULL AS has_file FROM settings WHERE user_id = %s AND client_id = %s AND template_name = %s LIMIT 1",
                     (current_user.id, selected_client or '', template_name)
                 )
                 result = cur.fetchone()
@@ -859,7 +859,7 @@ def index():
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute(
-            "SELECT template IS NOT NULL AS has_file FROM settings WHERE user_id = %s AND client_id = %s AND template_name = %s AND template IS NOT NULL LIMIT 1",
+            "SELECT template IS NOT NULL AS has_file FROM settings WHERE user_id = %s AND client_id = %s AND template_name = %s LIMIT 1",
             (current_user.id, selected_client or '', selected_template)
         )
         result = cur.fetchone()
