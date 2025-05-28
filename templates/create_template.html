@@ -54,7 +54,7 @@
             </div>
             <div class="form-group">
                 <label for="prompt_name">Select Existing Prompt:</label>
-                <select class="form-control" id="prompt_name" name="prompt_name" onchange="clearNewPromptFields()">
+                <select class="form-control" id="prompt_name" name="prompt_name" onchange="updatePromptContent()">
                     <option value="">Create a new prompt below</option>
                     {% for prompt in prompts %}
                         <option value="{{ prompt.prompt_name }}">{{ prompt.prompt_name }}</option>
@@ -150,14 +150,33 @@ function resetPromptDropdown() {
     document.getElementById('prompt_name').value = '';
 }
 
+function updatePromptContent() {
+    const promptName = document.getElementById('prompt_name').value;
+    const clientId = document.getElementById('client_id').value || '';
+    if (promptName) {
+        fetch('/load_client', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `client_id=${encodeURIComponent(clientId)}&prompt_name=${encodeURIComponent(promptName)}`
+        })
+        .then(response => response.json())
+        .then(data => {
+            document.getElementById('prompt_content').value = data.prompt || '';
+        })
+        .catch(error => console.error('Error loading prompt:', error));
+    } else {
+        document.getElementById('prompt_content').value = '';
+    }
+}
+
 document.getElementById('template-form').addEventListener('submit', function(event) {
-    var templateName = document.getElementById('template_name').value.trim();
-    var existingTemplates = [
+    const templateName = document.getElementById('template_name').value.trim();
+    const existingTemplates = [
         {% for template in templates %}
             '{{ template.template_name | safe }}',
         {% endfor %}
     ];
-    var action = document.getElementById('action').value;
+    const action = document.getElementById('action').value;
     if (action === 'create' && existingTemplates.includes(templateName)) {
         alert('A template with this name already exists for this client. Please choose a different name.');
         event.preventDefault();

@@ -686,25 +686,37 @@ def load_client():
         client_id = data.get('client_id', '')
         template_name = data.get('template_name')
         prompt_name = data.get('prompt_name')
-        if not client_id and template_name:
-            return jsonify({'error': 'Client ID required for template'}), 400
         if template_name:
-            prompt = load_prompt_for_template(client_id, current_user.id, template_name)
-            prompt_name = get_prompt_name_for_template(client_id, current_user.id, template_name)
             conn = get_db_connection()
             cur = conn.cursor()
             cur.execute(
-                "SELECT template IS NOT NULL AS has_file FROM settings WHERE user_id = %s AND client_id = %s AND template_name = %s LIMIT 1",
+                "SELECT prompt->'prompt' AS prompt_content, prompt_name, template IS NOT NULL AS has_file "
+                "FROM settings WHERE user_id = %s AND client_id = %s AND template_name = %s LIMIT 1",
                 (current_user.id, client_id, template_name)
             )
             result = cur.fetchone()
-            has_file = result[0] if result else False
             cur.close()
             conn.close()
-            return jsonify({'prompt': prompt, 'prompt_name': prompt_name or 'Custom', 'has_file': has_file}), 200
+            if result:
+                prompt = result[0] or ''
+                prompt_name = result[1] or 'Custom'
+                has_file = result[2]
+                return jsonify({'prompt': prompt, 'prompt_name': prompt_name, 'has_file': has_file}), 200
+            return jsonify({'prompt': '', 'prompt_name': 'Custom', 'has_file': False}), 404
         elif prompt_name and prompt_name != 'Custom':
-            prompt = load_prompt(client_id, current_user.id, prompt_name)
-            return jsonify({'prompt': prompt, 'prompt_name': prompt_name, 'has_file': False}), 200
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT prompt->'prompt' AS prompt_content FROM settings "
+                "WHERE user_id = %s AND client_id = %s AND prompt_name = %s AND prompt IS NOT NULL LIMIT 1",
+                (current_user.id, client_id, prompt_name)
+            )
+            result = cur.fetchone()
+            cur.close()
+            conn.close()
+            if result:
+                return jsonify({'prompt': result[0] or '', 'prompt_name': prompt_name, 'has_file': False}), 200
+            return jsonify({'prompt': '', 'prompt_name': 'Custom', 'has_file': False}), 404
         return jsonify({'prompt': '', 'prompt_name': 'Custom', 'has_file': False}), 200
     except Exception as e:
         logger.error(f"Error loading client: {str(e)}")
@@ -728,10 +740,10 @@ def index():
         client_id = request.form.get('client_id', '')
 
         if action == 'select_client':
-            session['selected_client'] = client_id if client_id in clients else None
+            session['selected_client'] = client_id if client_id in clients or client_id == '' else None
             session.pop('selected_template', None)
             session.pop('selected_prompt', None)
-            selected_client = client_id if client_id in clients else None
+            selected_client = client_id if client_id in clients or client_id == '' else None
             selected_template = None
             selected_prompt = 'Custom'
             if client_id:
@@ -742,21 +754,29 @@ def index():
             if template_name:
                 session['selected_template'] = template_name
                 selected_template = template_name
-                prompt_name = get_prompt_name_for_template(selected_client or '', current_user.id, template_name)
-                prompt_content = load_prompt_for_template(selected_client or '', current_user.id, template_name)
-                session['selected_prompt'] = prompt_name or 'Custom'
-                selected_prompt = prompt_name or 'Custom'
                 conn = get_db_connection()
                 cur = conn.cursor()
                 cur.execute(
-                    "SELECT template IS NOT NULL AS has_file FROM settings WHERE user_id = %s AND client_id = %s AND template_name = %s LIMIT 1",
+                    "SELECT prompt->'prompt' AS prompt_content, prompt_name, template IS NOT NULL AS has_file "
+                    "FROM settings WHERE user_id = %s AND client_id = %s AND template_name = %s LIMIT 1",
                     (current_user.id, selected_client or '', template_name)
                 )
                 result = cur.fetchone()
-                has_template_file = result[0] if result else False
                 cur.close()
                 conn.close()
-                flash(f'Selected template: {template_name}', 'success')
+                if result:
+                    prompt_content = result[0] or ''
+                    selected_prompt = result[1] or 'Custom'
+                    has_template_file = result[2]
+                    session['selected_prompt'] = selected_prompt
+                    flash(f'Selected template: {template_name}', 'success')
+                else:
+                    selected_template = None
+                    selected_prompt = 'Custom'
+                    prompt_content = ''
+                    session.pop('selected_template', None)
+                    session.pop('selected_prompt', None)
+                    flash(f'Template {template_name} not found', 'danger')
             else:
                 session.pop('selected_template', None)
                 session.pop('selected_prompt', None)
@@ -815,7 +835,7 @@ def index():
 
     # Handle GET with query parameter
     client_id = request.args.get('client_id', '')
-    if client_id and client_id in clients:
+    if client_id and (client_id in clients or client_id == ''):
         session['selected_client'] = client_id
         session.pop('selected_template', None)
         session.pop('selected_prompt', None)
@@ -854,18 +874,24 @@ def index():
     logger.info(f"Prompts for client {selected_client or 'global'}: {prompts}")
 
     if selected_template:
-        prompt_content = load_prompt_for_template(selected_client or '', current_user.id, selected_template)
-        selected_prompt = get_prompt_name_for_template(selected_client or '', current_user.id, selected_template) or 'Custom'
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute(
-            "SELECT template IS NOT NULL AS has_file FROM settings WHERE user_id = %s AND client_id = %s AND template_name = %s LIMIT 1",
+            "SELECT prompt->'prompt' AS prompt_content, prompt_name, template IS NOT NULL AS has_file "
+            "FROM settings WHERE user_id = %s AND client_id = %s AND template_name = %s LIMIT 1",
             (current_user.id, selected_client or '', selected_template)
         )
         result = cur.fetchone()
-        has_template_file = result[0] if result else False
         cur.close()
         conn.close()
+        if result:
+            prompt_content = result[0] or ''
+            selected_prompt = result[1] or 'Custom'
+            has_template_file = result[2]
+        else:
+            selected_template = None
+            selected_prompt = 'Custom'
+            prompt_content = ''
 
     return render_template('index.html', clients=clients, selected_client=selected_client, templates=templates, prompts=prompts, selected_template=selected_template, selected_prompt=selected_prompt, prompt_content=prompt_content, has_template_file=has_template_file)
 
@@ -886,12 +912,12 @@ def load_prompt(client_id=None, user_id=None, prompt_name=None):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        if client_id and user_id and prompt_name:
+        if client_id is not None and user_id and prompt_name:
             cur.execute(
                 "SELECT prompt->'prompt' AS prompt_content FROM settings WHERE client_id = %s AND user_id = %s AND prompt_name = %s AND prompt IS NOT NULL ORDER BY created_at DESC LIMIT 1",
                 (client_id, user_id, prompt_name)
             )
-        elif client_id and user_id:
+        elif client_id is not None and user_id:
             cur.execute(
                 "SELECT prompt->'prompt' AS prompt_content FROM settings WHERE client_id = %s AND user_id = %s AND prompt IS NOT NULL ORDER BY created_at DESC LIMIT 1",
                 (client_id, user_id)
@@ -947,17 +973,19 @@ def save_prompt(prompt, client_id, user_id, prompt_name):
             raise ValueError(f"Prompt name cannot be empty: prompt_name={prompt_name}")
         if not prompt:
             raise ValueError(f"Prompt content cannot be empty")
+        # Sanitize prompt to handle special characters
+        sanitized_prompt = prompt.encode('utf-8', errors='replace').decode('utf-8')
         client_id = client_id or ''
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute(
             "INSERT INTO settings (user_id, client_id, prompt, prompt_name) VALUES (%s, %s, %s, %s) ON CONFLICT ON CONSTRAINT settings_unique_user_client_prompt_template DO UPDATE SET prompt = EXCLUDED.prompt",
-            (user_id, client_id, Json({'prompt': prompt}), prompt_name)
+            (user_id, client_id, Json({'prompt': sanitized_prompt}), prompt_name)
         )
         conn.commit()
         cur.close()
         conn.close()
-        logger.info(f"Saved prompt '{prompt_name}' for client {client_id or 'global'}, user {user_id}: {prompt[:100]}...")
+        logger.info(f"Saved prompt '{prompt_name}' for client {client_id or 'global'}, user {user_id}: {sanitized_prompt[:100]}...")
     except Exception as e:
         logger.error(f"Error saving prompt: {str(e)}")
         raise
@@ -988,12 +1016,12 @@ def load_template(output_path, client_id=None, user_id=None, template_name=None)
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        if client_id and user_id and template_name:
+        if client_id is not None and user_id and template_name:
             cur.execute(
                 "SELECT template FROM settings WHERE client_id = %s AND user_id = %s AND template_name = %s AND template IS NOT NULL ORDER BY created_at DESC LIMIT 1",
                 (client_id, user_id, template_name)
             )
-        elif client_id and user_id:
+        elif client_id is not None and user_id:
             cur.execute(
                 "SELECT template FROM settings WHERE client_id = %s AND user_id = %s AND template IS NOT NULL ORDER BY created_at DESC LIMIT 1",
                 (client_id, user_id)

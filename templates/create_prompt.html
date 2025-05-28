@@ -30,6 +30,7 @@
                             <td>{{ prompt.prompt_name }}</td>
                             <td>
                                 <button class="btn btn-sm btn-primary" onclick='editPrompt("{{ prompt.prompt_name | safe }}", {{ prompt.prompt_content | tojson | safe }})'>Edit</button>
+                                <button class="btn btn-sm btn-danger" onclick='deletePrompt("{{ prompt.prompt_name | safe }}", "{{ selected_client | safe }}")'>Delete</button>
                             </td>
                         </tr>
                     {% endfor %}
@@ -81,14 +82,34 @@ function cancelEdit() {
     document.getElementById('edit-buttons').style.display = 'none';
 }
 
+function deletePrompt(promptName, clientId) {
+    if (confirm(`Are you sure you want to delete the prompt "${promptName}"?`)) {
+        fetch('/delete_prompt', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `client_id=${encodeURIComponent(clientId)}&prompt_name=${encodeURIComponent(promptName)}`
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                alert('Prompt deleted successfully');
+                window.location.reload();
+            } else {
+                alert(`Failed to delete prompt: ${data.error}`);
+            }
+        })
+        .catch(error => alert(`Error deleting prompt: ${error}`));
+    }
+}
+
 document.getElementById('prompt-form').addEventListener('submit', function(event) {
-    var promptName = document.getElementById('prompt_name').value.trim();
-    var existingPrompts = [
+    const promptName = document.getElementById('prompt_name').value.trim();
+    const existingPrompts = [
         {% for prompt in prompts %}
             '{{ prompt.prompt_name | safe }}',
         {% endfor %}
     ];
-    var action = document.getElementById('action').value;
+    const action = document.getElementById('action').value;
     if (action === 'create' && existingPrompts.includes(promptName)) {
         alert('A prompt with this name already exists for this client. Please choose a different name.');
         event.preventDefault();
