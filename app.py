@@ -271,88 +271,14 @@ def create_client():
     return render_template('create_client.html', clients=clients, selected_client=selected_client, prompts=prompts, templates=templates)
 
 # Prompt creation/editing route
-@app.route('/create_prompt', methods=['GET', 'POST'])
+@app.route('/create_template', methods=['GET', 'POST'])
 @login_required
-def create_prompt():
+def create_template():
     clients = get_clients(current_user.id)
     selected_client = request.args.get('client_id', '')
-    edit_prompt = request.args.get('edit_prompt', '')
+    edit_template = request.args.get('edit_template', '')
+    templates = []
     prompts = []
-    
-    if request.method == 'POST':
-        action = request.form.get('action')
-        client_id = request.form.get('client_id', '').strip()
-        prompt_name = request.form.get('prompt_name', '').strip()
-        prompt_content = request.form.get('prompt_content', '').strip()
-        original_prompt_name = request.form.get('original_prompt_name', prompt_name).strip()
-        
-        if action == 'create':
-            if not prompt_name:
-                flash('Prompt name cannot be empty', 'danger')
-                return redirect(url_for('create_prompt', client_id=client_id))
-            if not prompt_content:
-                flash('Prompt content cannot be empty', 'danger')
-                return redirect(url_for('create_prompt', client_id=client_id))
-            try:
-                conn = get_db_connection()
-                cur = conn.cursor()
-                cur.execute(
-                    "SELECT id FROM settings WHERE user_id = %s AND client_id = %s AND prompt_name = %s",
-                    (current_user.id, client_id, prompt_name)
-                )
-                if cur.fetchone():
-                    flash(f'Prompt "{prompt_name}" already exists for this client', 'danger')
-                    cur.close()
-                    conn.close()
-                    return redirect(url_for('create_prompt', client_id=client_id))
-                save_prompt(prompt_content, client_id, current_user.id, prompt_name)
-                flash(f'Prompt "{prompt_name}" created successfully', 'success')
-                cur.close()
-                conn.close()
-                return redirect(url_for('create_prompt', client_id=client_id))
-            except Exception as e:
-                logger.error(f"Error creating prompt: {str(e)}")
-                flash(f'Failed to create prompt: {str(e)}', 'danger')
-                return redirect(url_for('create_prompt', client_id=client_id))
-        
-        elif action == 'update':
-            if not prompt_name:
-                flash('Prompt name cannot be empty', 'danger')
-                return redirect(url_for('create_prompt', client_id=client_id))
-            if not prompt_content:
-                flash('Prompt content cannot be empty', 'danger')
-                return redirect(url_for('create_prompt', client_id=client_id))
-            try:
-                conn = get_db_connection()
-                cur = conn.cursor()
-                if prompt_name != original_prompt_name:
-                    cur.execute(
-                        "SELECT id FROM settings WHERE user_id = %s AND client_id = %s AND prompt_name = %s",
-                        (current_user.id, client_id, prompt_name)
-                    )
-                    if cur.fetchone():
-                        flash(f'Prompt "{prompt_name}" already exists for this client', 'danger')
-                        cur.close()
-                        conn.close()
-                        return redirect(url_for('create_prompt', client_id=client_id))
-                cur.execute(
-                    "UPDATE settings SET prompt = %s, prompt_name = %s WHERE user_id = %s AND client_id = %s AND prompt_name = %s",
-                    (Json({'prompt': prompt_content}), prompt_name, current_user.id, client_id, original_prompt_name)
-                )
-                if cur.rowcount == 0:
-                    flash(f'Prompt "{original_prompt_name}" not found for update', 'danger')
-                    cur.close()
-                    conn.close()
-                    return redirect(url_for('create_prompt', client_id=client_id))
-                conn.commit()
-                cur.close()
-                conn.close()
-                flash(f'Prompt "{prompt_name}" updated successfully', 'success')
-                return redirect(url_for('create_prompt', client_id=client_id))
-            except Exception as e:
-                logger.error(f"Error updating prompt: {str(e)}")
-                flash(f'Failed to update prompt: {str(e)}', 'danger')
-                return redirect(url_for('create_prompt', client_id=client_id))
     
     # Load prompts for selected client or global
     conn = get_db_connection()
@@ -368,11 +294,178 @@ def create_prompt():
             (current_user.id,)
         )
     prompts = [{'prompt_name': row[0], 'prompt_content': row[1] or ''} for row in cur.fetchall()]
+    
+    if request.method == 'POST':
+        action = request.form.get('action')
+        client_id = request.form.get('client_id', '').strip()
+        template_name = request.form.get('template_name', '').strip()
+        prompt_name = request.form.get('prompt_name', '').strip()
+        prompt_name_new = request.form.get('prompt_name_new', '').strip()
+        prompt_content = request.form.get('prompt_content', '').strip()
+        template_file = request.files.get('template_file')
+        original_template_name = request.form.get('original_template_name', template_name).strip()
+        
+        # Use new prompt name if provided
+        if prompt_name_new and prompt_content:
+            prompt_name = prompt_name_new
+        
+        if action == 'create':
+            if not template_name:
+                flash('Template name cannot be empty', 'danger')
+                return redirect(url_for('create_template', client_id=client_id))
+            if not template_file or not template_file.filename.endswith('.docx'):
+                flash('Valid .docx template file required', 'danger')
+                return redirect(url_for('create_template', client_id=client_id))
+            if not prompt_name:
+                flash('Please select an existing prompt or provide a new one', 'danger')
+                return redirect(url_for('create_template', client_id=client_id))
+            try:
+                conn = get_db_connection()
+                cur = conn.cursor()
+                # Check if template name exists
+                cur.execute(
+                    "SELECT id FROM settings WHERE user_id = %s AND client_id = %s AND template_name = %s",
+                    (current_user.id, client_id, template_name)
+                )
+                if cur.fetchone():
+                    flash(f'Template "{template_name}" already exists for this client', 'danger')
+                    cur.close()
+                    conn.close()
+                    return redirect(url_for('create_template', client_id=client_id))
+                # Check if prompt name exists if new
+                if prompt_name_new:
+                    cur.execute(
+                        "SELECT id FROM settings WHERE user_id = %s AND client_id = %s AND prompt_name = %s",
+                        (current_user.id, client_id, prompt_name)
+                    )
+                    if cur.fetchone():
+                        flash(f'Prompt "{prompt_name}" already exists for this client', 'danger')
+                        cur.close()
+                        conn.close()
+                        return redirect(url_for('create_template', client_id=client_id))
+                    save_prompt(prompt_content, client_id, current_user.id, prompt_name)
+                # Fetch existing prompt_content for selected prompt
+                prompt_json = None
+                if prompt_name and not prompt_name_new:
+                    cur.execute(
+                        "SELECT prompt FROM settings WHERE user_id = %s AND (client_id = %s OR client_id = '') AND prompt_name = %s AND prompt IS NOT NULL LIMIT 1",
+                        (current_user.id, client_id, prompt_name)
+                    )
+                    result = cur.fetchone()
+                    if result:
+                        prompt_json = result[0]
+                    else:
+                        flash(f'Prompt "{prompt_name}" not found', 'danger')
+                        cur.close()
+                        conn.close()
+                        return redirect(url_for('create_template', client_id=client_id))
+                # Save template
+                file_data = template_file.read()
+                cur.execute(
+                    "INSERT INTO settings (user_id, client_id, prompt, prompt_name, template, template_name) "
+                    "VALUES (%s, %s, %s, %s, %s, %s)",
+                    (current_user.id, client_id, Json(prompt_json) if prompt_json else None, prompt_name, file_data, template_name)
+                )
+                conn.commit()
+                flash(f'Template "{template_name}" created successfully', 'success')
+                cur.close()
+                conn.close()
+                return redirect(url_for('create_template', client_id=client_id))
+            except Exception as e:
+                logger.error(f"Error creating template: {str(e)}")
+                flash(f'Failed to create template: {str(e)}', 'danger')
+                return redirect(url_for('create_template', client_id=client_id))
+        
+        elif action == 'update':
+            if not template_name:
+                flash('Template name cannot be empty', 'danger')
+                return redirect(url_for('create_template', client_id=client_id))
+            if not prompt_name:
+                flash('Please select an existing prompt or provide a new one', 'danger')
+                return redirect(url_for('create_template', client_id=client_id))
+            try:
+                conn = get_db_connection()
+                cur = conn.cursor()
+                # Check if new template_name conflicts
+                if template_name != original_template_name:
+                    cur.execute(
+                        "SELECT id FROM settings WHERE user_id = %s AND client_id = %s AND template_name = %s",
+                        (current_user.id, client_id, template_name)
+                    )
+                    if cur.fetchone():
+                        flash(f'Template "{template_name}" already exists for this client', 'danger')
+                        cur.close()
+                        conn.close()
+                        return redirect(url_for('create_template', client_id=client_id))
+                # Check if new prompt_name conflicts
+                if prompt_name_new:
+                    cur.execute(
+                        "SELECT id FROM settings WHERE user_id = %s AND client_id = %s AND prompt_name = %s",
+                        (current_user.id, client_id, prompt_name)
+                    )
+                    if cur.fetchone():
+                        flash(f'Prompt "{prompt_name}" already exists for this client', 'danger')
+                        cur.close()
+                        conn.close()
+                        return redirect(url_for('create_template', client_id=client_id))
+                    save_prompt(prompt_content, client_id, current_user.id, prompt_name)
+                # Fetch existing prompt_content for selected prompt
+                prompt_json = None
+                if prompt_name and not prompt_name_new:
+                    cur.execute(
+                        "SELECT prompt FROM settings WHERE user_id = %s AND (client_id = %s OR client_id = '') AND prompt_name = %s AND prompt IS NOT NULL LIMIT 1",
+                        (current_user.id, client_id, prompt_name)
+                    )
+                    result = cur.fetchone()
+                    if result:
+                        prompt_json = result[0]
+                # Update template
+                if template_file and template_file.filename.endswith('.docx'):
+                    cur.execute(
+                        "UPDATE settings SET template = %s, prompt = %s, prompt_name = %s, template_name = %s "
+                        "WHERE user_id = %s AND client_id = %s AND template_name = %s",
+                        (template_file.read(), Json(prompt_json) if prompt_json else None, prompt_name, template_name, current_user.id, client_id, original_template_name)
+                    )
+                else:
+                    cur.execute(
+                        "UPDATE settings SET prompt = %s, prompt_name = %s, template_name = %s "
+                        "WHERE user_id = %s AND client_id = %s AND template_name = %s",
+                        (Json(prompt_json) if prompt_json else None, prompt_name, template_name, current_user.id, client_id, original_template_name)
+                    )
+                if cur.rowcount == 0:
+                    flash(f'Template "{original_template_name}" not found for update', 'danger')
+                    cur.close()
+                    conn.close()
+                    return redirect(url_for('create_template', client_id=client_id))
+                conn.commit()
+                cur.close()
+                conn.close()
+                flash(f'Template "{template_name}" updated successfully', 'success')
+                return redirect(url_for('create_template', client_id=client_id))
+            except Exception as e:
+                logger.error(f"Error updating template: {str(e)}")
+                flash(f'Failed to update template: {str(e)}', 'danger')
+                return redirect(url_for('create_template', client_id=client_id))
+    
+    # Load templates for selected client or global
+    conn = get_db_connection()
+    cur = conn.cursor()
+    if selected_client:
+        cur.execute(
+            "SELECT template_name, prompt_name FROM settings WHERE user_id = %s AND (client_id = %s OR client_id = '') AND template IS NOT NULL",
+            (current_user.id, selected_client)
+        )
+    else:
+        cur.execute(
+            "SELECT template_name, prompt_name FROM settings WHERE user_id = %s AND client_id = '' AND template IS NOT NULL",
+            (current_user.id,)
+        )
+    templates = [{'template_name': row[0], 'prompt_name': row[1]} for row in cur.fetchall()]
     cur.close()
     conn.close()
-    logger.info(f"Prompts for client {selected_client or 'global'}: {prompts}")
+    logger.info(f"Templates for client {selected_client or 'global'}: {templates}")
     
-    return render_template('create_prompt.html', clients=clients, selected_client=selected_client, prompts=prompts, selected_prompt=edit_prompt)
+    return render_template('create_template.html', clients=clients, selected_client=selected_client, templates=templates, prompts=prompts, selected_template=edit_template)
 
 # Template creation/editing route
 @app.route('/create_template', methods=['GET', 'POST'])
@@ -611,7 +704,8 @@ def delete_prompt():
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute(
-            "DELETE FROM settings WHERE user_id = %s AND client_id = %s AND prompt_name = %s AND prompt IS NOT NULL",
+            "DELETE FROM settings WHERE user_id = %s AND client_id = %s AND prompt_name = %s "
+            "AND prompt IS NOT NULL AND template_name IS NULL AND template IS NULL",
             (current_user.id, client_id, prompt_name)
         )
         if cur.rowcount == 0:
