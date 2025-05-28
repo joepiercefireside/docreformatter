@@ -1232,21 +1232,19 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
                                 if isinstance(subvalue, str) and isinstance(merged_content[key][subkey], str):
                                     merged_content[key][subkey] += "\n" + subvalue if subvalue else ""
                                 elif isinstance(subvalue, list) and isinstance(merged_content[key][subkey], list):
-                                    merged_content[key][subkey].extend(subvalue)
+                                    merged_content[key][subkey].extend([x for x in subvalue if x not in merged_content[key][subkey]])
+                                elif isinstance(subvalue, dict) and isinstance(merged_content[key][subkey], dict):
+                                    for subsubkey, subsubvalue in subvalue.items():
+                                        merged_content[key][subkey][subsubkey] = subsubvalue
                                 else:
                                     merged_content[key][subkey] = subvalue
                             else:
                                 merged_content[key][subkey] = subvalue
                     elif isinstance(value, list) and isinstance(merged_content[key], list):
-                        merged_content[key].extend(value)
+                        merged_content[key].extend([x for x in value if x not in merged_content[key]])
                     else:
-                        # Convert existing value to appropriate type
-                        if isinstance(value, dict):
-                            merged_content[key] = value
-                        elif isinstance(value, list):
-                            merged_content[key] = value
-                        else:
-                            merged_content[key] = str(merged_content[key]) + "\n" + value if value else merged_content[key]
+                        # Prioritize newer value if types conflict
+                        merged_content[key] = value
                 else:
                     merged_content[key] = value
     
@@ -1343,6 +1341,24 @@ def create_reformatted_docx(sections, output_path, client_id=None, user_id=None)
                     run.font.name = template_para.runs[0].font.name if template_para.runs else "Calibri"
                     run.font.size = template_para.runs[0].font.size if template_para.runs else Pt(12)
         
+        def add_content(paragraph, content):
+            if isinstance(content, str):
+                paragraph.add_run(content)
+            elif isinstance(content, list):
+                for item in content:
+                    if isinstance(item, str):
+                        paragraph.add_run(item + "\n")
+                    elif isinstance(item, dict):
+                        for subkey, subvalue in item.items():
+                            paragraph.add_run(f"{subkey}: ")
+                            add_content(paragraph, subvalue)
+                            paragraph.add_run("\n")
+            elif isinstance(content, dict):
+                for subkey, subvalue in content.items():
+                    paragraph.add_run(f"{subkey}: ")
+                    add_content(paragraph, subvalue)
+                    paragraph.add_run("\n")
+        
         # Load template for styling
         template_doc = Document(template_path) if os.path.exists(template_path) else None
         template_paras = template_doc.paragraphs if template_doc else []
@@ -1361,18 +1377,14 @@ def create_reformatted_docx(sections, output_path, client_id=None, user_id=None)
                     para = doc.add_paragraph("References")
                     apply_template_style(para, next((p for p in template_paras if "references" in p.text.lower()), None))
                     for ref in value:
-                        para = doc.add_paragraph(ref)
+                        para = doc.add_paragraph()
+                        add_content(para, ref)
                         apply_template_style(para, next((p for p in template_paras if p.text.strip()), None))
-            elif isinstance(value, dict):
-                for subkey, subvalue in value.items():
-                    para = doc.add_paragraph(subkey)
-                    apply_template_style(para, next((p for p in template_paras if p.text.strip()), None))
-                    para = doc.add_paragraph(subvalue)
-                    apply_template_style(para, next((p for p in template_paras if p.text.strip()), None))
             else:
-                para = doc.add_paragraph(key)
+                para = doc.add_paragraph(key.capitalize())
                 apply_template_style(para, next((p for p in template_paras if key.lower() in p.text.lower()), None))
-                para = doc.add_paragraph(value)
+                para = doc.add_paragraph()
+                add_content(para, value)
                 apply_template_style(para, next((p for p in template_paras if p.text.strip()), None))
         
         doc.save(output_path)
