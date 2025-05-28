@@ -1096,8 +1096,12 @@ def get_clients(user_id):
 def extract_content_from_docx(file_path):
     try:
         doc = Document(file_path)
-        content = {"text": [], "tables": [], "references": []}
+        content = {"text_chunks": [], "tables": [], "references": []}
         in_references = False
+        chunk = []
+        chunk_size = 1000  # Characters per chunk for large files
+        current_chunk_length = 0
+
         for para in doc.paragraphs:
             text = para.text.strip()
             if text:
@@ -1107,7 +1111,15 @@ def extract_content_from_docx(file_path):
                 if in_references:
                     content["references"].append(text)
                 else:
-                    content["text"].append(text)
+                    chunk.append(text)
+                    current_chunk_length += len(text)
+                    if current_chunk_length >= chunk_size:
+                        content["text_chunks"].append("\n".join(chunk))
+                        chunk = []
+                        current_chunk_length = 0
+        if chunk:
+            content["text_chunks"].append("\n".join(chunk))
+
         for table in doc.tables:
             table_data = []
             for row in table.rows:
@@ -1127,65 +1139,78 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
         "Authorization": f"Bearer {API_KEY}",
         "Content-Type": "application/json"
     }
-    text = "\n".join(content["text"])
-    tables = json.dumps(content["tables"])
     ai_prompt = custom_prompt if custom_prompt else load_prompt(client_id, user_id, prompt_name)
-    messages = [
-        {"role": "system", "content": ai_prompt},
-        {
-            "role": "user",
-            "content": f"Input Text:\n{text}\n\nTables:\n{tables}\n\nOutput format:\n"
-                       "{\"summary\": \"...\", \"background\": \"...\", \"monograph\": \"...\", "
-                       "\"real_world\": \"\", \"enclosures\": \"...\", "
-                       "\"tables\": {\"section_name\": [[\"cell1\", \"cell2\"], [\"cell3\", \"cell4\"]]}, "
-                       "\"references\": [\"ref1\", \"ref2\", ...]}"
-        }
-    ]
-    payload = {
-        "model": "gpt-3.5-turbo",
-        "messages": messages,
-        "max_tokens": 4000,  # Increased to handle larger responses
-        "temperature": 0.7
-    }
-    try:
-        response = requests.post(AI_API_URL, headers=headers, json=payload)
-        response.raise_for_status()
-        data = response.json()
-        raw_content = data["choices"][0]["message"]["content"]
-        logger.info(f"Raw AI response: {raw_content[:1000]}...")
-        try:
-            parsed_content = json.loads(raw_content)
-            if not isinstance(parsed_content, dict):
-                raise ValueError("AI response is not a JSON object")
-            if "tables" in parsed_content and isinstance(parsed_content["tables"], dict):
-                for section_name, table_data in parsed_content["tables"].items():
-                    while isinstance(table_data, list) and len(table_data) == 1 and isinstance(table_data[0], list):
-                        table_data = table_data[0]
-                    parsed_content["tables"][section_name] = table_data
-                    if not all(isinstance(row, list) for row in table_data):
-                        logger.warning(f"Invalid table data for {section_name}: {table_data}")
-                        parsed_content["tables"][section_name] = []
-            logger.info(f"Parsed AI response: {parsed_content}")
-            return parsed_content
-        except json.JSONDecodeError as e:
-            logger.error(f"JSON validation error: {str(e)}")
-            return {
-                "error": f"Invalid JSON from AI: {str(e)}",
-                "summary": "Unable to reformat due to AI response error",
-                "background": content["text"][:500] if content["text"] else "",
-                "monograph": "",
-                "real_world": "",
-                "enclosures": "",
-                "tables": {},
-                "references": content["references"]
+    
+    def process_chunk(chunk_text, tables, chunk_index):
+        messages = [
+            {"role": "system", "content": ai_prompt},
+            {
+                "role": "user",
+                "content": f"Input Text (Chunk {chunk_index}):\n{chunk_text}\n\nTables:\n{json.dumps(tables)}\n\n"
+                           "Output a JSON object with section headers from the template and semantically mapped content from the source. "
+                           "Combine or split source sections as needed to fit the template's structure."
             }
-    except requests.exceptions.HTTPError as e:
-        error_response = response.json() if response else {"error": str(e)}
-        logger.error(f"API Error: {response.status_code} - {error_response}")
-        return {"error": f"HTTP Error: {str(e)} - {error_response}"}
-    except Exception as e:
-        logger.error(f"Unexpected Error: {str(e)}")
-        return {"error": str(e)}
+        ]
+        payload = {
+            "model": "gpt-3.5-turbo",
+            "messages": messages,
+            "max_tokens": 6000,  # Increased for large documents
+            "temperature": 0.7
+        }
+        try:
+            response = requests.post(AI_API_URL, headers=headers, json=payload)
+            response.raise_for_status()
+            data = response.json()
+            raw_content = data["choices"][0]["message"]["content"]
+            logger.info(f"Raw AI response (chunk {chunk_index}): {raw_content[:1000]}...")
+            try:
+                parsed_content = json.loads(raw_content)
+                if not isinstance(parsed_content, dict):
+                    raise ValueError("AI response is not a JSON object")
+                return parsed_content
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON validation error (chunk {chunk_index}): {str(e)}")
+                return {"error": f"Invalid JSON in chunk {chunk_index}: {str(e)}"}
+        except requests.exceptions.HTTPError as e:
+            error_response = response.json() if response else {"error": str(e)}
+            logger.error(f"API Error (chunk {chunk_index}): {response.status_code} - {error_response}")
+            return {"error": f"HTTP Error in chunk {chunk_index}: {str(e)}"}
+        except Exception as e:
+            logger.error(f"Unexpected Error (chunk {chunk_index}): {str(e)}")
+            return {"error": str(e)}
+
+    # Process text chunks
+    results = []
+    for i, chunk in enumerate(content["text_chunks"], 1):
+        result = process_chunk(chunk, content["tables"], i)
+        results.append(result)
+    
+    # Merge results
+    merged_content = {}
+    errors = []
+    for result in results:
+        if "error" in result:
+            errors.append(result["error"])
+        else:
+            for key, value in result.items():
+                if key in merged_content:
+                    merged_content[key] += "\n" + value if value else ""
+                else:
+                    merged_content[key] = value if value else ""
+    
+    if errors:
+        logger.error(f"Errors in processing: {errors}")
+        return {
+            "error": "; ".join(errors),
+            "content": content["text_chunks"][0][:500] if content["text_chunks"] else "",
+            "tables": content["tables"],
+            "references": content["references"]
+        }
+    
+    # Add references
+    merged_content["references"] = content["references"]
+    logger.info(f"Merged AI response: {merged_content}")
+    return merged_content
 
 def add_styled_heading(doc, text, level=1):
     try:
@@ -1253,126 +1278,51 @@ def add_styled_table(doc, table_data, section_name):
         logger.error(f"Error adding styled table for {section_name}: {str(e)}")
         raise
 
-def create_reformatted_docx(sections, output_path, drug_name="KRESLADI", client_id=None, user_id=None):
+def create_reformatted_docx(sections, output_path, client_id=None, user_id=None):
     try:
-        default_sections = {
-            "summary": "No summary provided",
-            "background": "No background provided",
-            "monograph": "No monograph provided",
-            "real_world": "",
-            "enclosures": "No enclosures provided",
-            "tables": {},
-            "references": []
-        }
-        sections = {**default_sections, **sections}
         template_path = os.path.join(app.config['UPLOAD_FOLDER'], 'temp_template.docx')
-        if os.path.exists(template_path):
-            logger.info(f"Using template: {template_path}")
-            doc = Document(template_path)
-            def replace_placeholder(paragraph, placeholder, content, preserve_style=True):
-                if placeholder.lower() in paragraph.text.lower():
-                    if preserve_style:
-                        paragraph.text = ""
-                        run = paragraph.add_run(content)
-                        if paragraph.runs:
-                            first_run = paragraph.runs[0]
-                            run.bold = first_run.bold
-                            run.underline = first_run.underline
-                            run.font.name = first_run.font.name
-                            run.font.size = first_run.font.size
-                    else:
-                        paragraph.text = content
-            def add_table_after_placeholder(doc, placeholder, table_data, section_name):
-                for i, para in enumerate(doc.paragraphs):
-                    if placeholder.lower() in para.text.lower():
-                        logger.info(f"Adding table for {section_name} after placeholder: {placeholder}")
-                        max_cols = max(len(row) for row in table_data)
-                        table_data = [row + [""] * (max_cols - len(row)) for row in table_data]
-                        table = doc.add_table(rows=len(table_data), cols=max_cols)
-                        table.alignment = WD_TABLE_ALIGNMENT.CENTER
-                        table.autofit = True
-                        for row_idx, row_data in enumerate(table_data):
-                            row = table.rows[row_idx]
-                            for col_idx, cell_text in enumerate(row_data):
-                                cell = row.cells[col_idx]
-                                cell.text = cell_text or ""
-                                cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
-                                for p in cell.paragraphs:
-                                    for r in p.runs:
-                                        r.font.name = para.runs[0].font.name if para.runs else "Calibri"
-                                        r.font.size = para.runs[0].font.size if para.runs else Pt(10)
-                        if doc.tables:
-                            for row in table.rows:
-                                for cell in row.cells:
-                                    tcPr = cell._tc.get_or_add_tcPr()
-                                    tcBorders = tcPr.first_child_found_in("w:tcBorders")
-                                    if not tcBorders:
-                                        tcBorders = OxmlElement('w:tcBorders')
-                                        tcPr.append(tcBorders)
-                                        for border_name in ['top', 'left', 'bottom', 'right']:
-                                            border = OxmlElement(f'w:{border_name}')
-                                            border.set(qn('w:val'), 'single')
-                                            border.set(qn('w:sz'), '4')
-                                            border.set(qn('w:space'), '0')
-                                            border.set(qn('w:color'), 'auto')
-                                            tcBorders.append(border)
-                        return True
-                return False
-            for para in doc.paragraphs:
-                if "drug name" in para.text.lower():
-                    replace_placeholder(para, "drug name", f"{drug_name} (marnetegragene autotemcel)")
-                elif "summary" in para.text.lower():
-                    replace_placeholder(para, "summary", sections["summary"])
-                elif "background" in para.text.lower():
-                    replace_placeholder(para, "background", sections["background"])
-                elif "monograph" in para.text.lower():
-                    replace_placeholder(para, "monograph", sections["monograph"])
-                elif "real-world experiences" in para.text.lower() and sections["real_world"].strip():
-                    replace_placeholder(para, "real-world experiences", sections["real_world"])
-                elif "enclosures" in para.text.lower():
-                    replace_placeholder(para, "enclosures", sections["enclosures"])
-                elif "references" in para.text.lower():
-                    replace_placeholder(para, "references", "\n".join([f"{i}. {ref}" for i, ref in enumerate(sections["references"], 1)]))
-            for section_name, table_data in sections["tables"].items():
-                if not add_table_after_placeholder(doc, section_name, table_data, section_name):
-                    logger.info(f"No placeholder found for table: {section_name}, appending at end")
-                    para = doc.add_paragraph(section_name)
-                    add_styled_table(doc, table_data, section_name)
-        else:
-            logger.info(f"No template found, using default formatting")
-            doc = Document()
-            add_styled_heading(doc, f"{drug_name} (marnetegragene autotemcel)", level=1)
-            add_styled_heading(doc, "Summary", level=1)
-            for line in sections["summary"].split("\n"):
-                if line.strip():
-                    add_styled_text(doc, line, bullet=True)
-            add_styled_heading(doc, "Background Information on Leukocyte Adhesion Deficiency (LAD-I)", level=1)
-            for line in sections["background"].split("\n"):
-                if line.strip():
-                    add_styled_text(doc, line)
-            add_styled_heading(doc, "Product Monograph", level=1)
-            for line in sections["monograph"].split("\n"):
-                if line.strip():
-                    add_styled_text(doc, line, bullet=True)
-            if sections["real_world"].strip():
-                add_styled_heading(doc, "Real-World Experiences with KRESLADI", level=1)
-                for line in sections["real_world"].split("\n"):
-                    if line.strip():
-                        add_styled_text(doc, line)
-            logger.info(f"Processing tables: {sections['tables']}")
-            for section_name, table_data in sections["tables"].items():
-                add_styled_heading(doc, section_name, level=2)
-                add_styled_table(doc, table_data, section_name)
-            add_styled_heading(doc, "Figures", level=1)
-            add_styled_text(doc, "Insert Figure 1: Study Administration and Treatment here")
-            add_styled_text(doc, "Insert Figure 2: Incidence of Infection-related Hospitalizations here")
-            add_styled_heading(doc, "Enclosures", level=1)
-            for line in sections["enclosures"].split("\n"):
-                if line.strip():
-                    add_styled_text(doc, line, bullet=True)
-            add_styled_heading(doc, "References", level=1)
-            for i, ref in enumerate(sections["references"], 1):
-                add_styled_text(doc, f"{i}. {ref}", bullet=False)
+        doc = Document(template_path) if os.path.exists(template_path) else Document()
+        
+        def apply_template_style(paragraph, template_para):
+            if template_para:
+                for run in paragraph.runs:
+                    run.bold = template_para.runs[0].bold if template_para.runs else False
+                    run.underline = template_para.runs[0].underline if template_para.runs else False
+                    run.font.name = template_para.runs[0].font.name if template_para.runs else "Calibri"
+                    run.font.size = template_para.runs[0].font.size if template_para.runs else Pt(12)
+        
+        # Load template for styling
+        template_doc = Document(template_path) if os.path.exists(template_path) else None
+        template_paras = template_doc.paragraphs if template_doc else []
+        
+        # Handle errors
+        if "error" in sections:
+            para = doc.add_paragraph(f"Error: {sections['error']}")
+            apply_template_style(para, template_paras[0] if template_paras else None)
+            doc.save(output_path)
+            return
+        
+        # Add sections dynamically
+        for key, value in sections.items():
+            if key == "references":
+                if value:
+                    para = doc.add_paragraph("References")
+                    apply_template_style(para, next((p for p in template_paras if "references" in p.text.lower()), None))
+                    for ref in value:
+                        para = doc.add_paragraph(ref)
+                        apply_template_style(para, next((p for p in template_paras if p.text.strip()), None))
+            elif isinstance(value, dict):
+                for subkey, subvalue in value.items():
+                    para = doc.add_paragraph(subkey)
+                    apply_template_style(para, next((p for p in template_paras if p.text.strip()), None))
+                    para = doc.add_paragraph(subvalue)
+                    apply_template_style(para, next((p for p in template_paras if p.text.strip()), None))
+            else:
+                para = doc.add_paragraph(key)
+                apply_template_style(para, next((p for p in template_paras if key.lower() in p.text.lower()), None))
+                para = doc.add_paragraph(value)
+                apply_template_style(para, next((p for p in template_paras if p.text.strip()), None))
+        
         doc.save(output_path)
     except Exception as e:
         logger.error(f"Error creating reformatted docx: {str(e)}")
