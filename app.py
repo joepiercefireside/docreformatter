@@ -1224,17 +1224,29 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
         else:
             for key, value in result.items():
                 if key in merged_content:
-                    if isinstance(value, str):
+                    if isinstance(value, str) and isinstance(merged_content[key], str):
                         merged_content[key] += "\n" + value if value else ""
-                    elif isinstance(value, dict):
-                        if not isinstance(merged_content[key], dict):
-                            merged_content[key] = {}
+                    elif isinstance(value, dict) and isinstance(merged_content[key], dict):
                         for subkey, subvalue in value.items():
-                            merged_content[key][subkey] = subvalue
-                    elif isinstance(value, list):
-                        if not isinstance(merged_content[key], list):
-                            merged_content[key] = []
+                            if subkey in merged_content[key]:
+                                if isinstance(subvalue, str) and isinstance(merged_content[key][subkey], str):
+                                    merged_content[key][subkey] += "\n" + subvalue if subvalue else ""
+                                elif isinstance(subvalue, list) and isinstance(merged_content[key][subkey], list):
+                                    merged_content[key][subkey].extend(subvalue)
+                                else:
+                                    merged_content[key][subkey] = subvalue
+                            else:
+                                merged_content[key][subkey] = subvalue
+                    elif isinstance(value, list) and isinstance(merged_content[key], list):
                         merged_content[key].extend(value)
+                    else:
+                        # Convert existing value to appropriate type
+                        if isinstance(value, dict):
+                            merged_content[key] = value
+                        elif isinstance(value, list):
+                            merged_content[key] = value
+                        else:
+                            merged_content[key] = str(merged_content[key]) + "\n" + value if value else merged_content[key]
                 else:
                     merged_content[key] = value
     
