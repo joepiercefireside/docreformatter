@@ -1169,12 +1169,13 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
                     parsed_content = json.loads(raw_content)
                     if not isinstance(parsed_content, dict):
                         raise ValueError("AI response is not a JSON object")
-                    return parsed_content
+                    # Normalize key case
+                    normalized_content = {k.lower(): v for k, v in parsed_content.items()}
+                    return normalized_content
                 except json.JSONDecodeError as e:
                     logger.error(f"JSON validation error (chunk {chunk_index}): {str(e)}, raw: {raw_content[:1000]}")
-                    # Attempt to extract content from markdown/plain text
                     try:
-                        # Basic parsing for markdown headers and content
+                        # Parse markdown/plain text as fallback
                         lines = raw_content.split("\n")
                         parsed_content = {}
                         current_key = None
@@ -1183,13 +1184,13 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
                             line = line.strip()
                             if line.startswith("**") and line.endswith("**"):
                                 if current_key:
-                                    parsed_content[current_key] = "\n".join(current_value).strip()
+                                    parsed_content[current_key.lower()] = "\n".join(current_value).strip()
                                     current_value = []
                                 current_key = line.strip("**").strip()
                             elif line:
                                 current_value.append(line)
                         if current_key and current_value:
-                            parsed_content[current_key] = "\n".join(current_value).strip()
+                            parsed_content[current_key.lower()] = "\n".join(current_value).strip()
                         if parsed_content:
                             logger.info(f"Parsed markdown content (chunk {chunk_index}): {parsed_content}")
                             return parsed_content
@@ -1223,9 +1224,19 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
         else:
             for key, value in result.items():
                 if key in merged_content:
-                    merged_content[key] += "\n" + value if value else ""
+                    if isinstance(value, str):
+                        merged_content[key] += "\n" + value if value else ""
+                    elif isinstance(value, dict):
+                        if not isinstance(merged_content[key], dict):
+                            merged_content[key] = {}
+                        for subkey, subvalue in value.items():
+                            merged_content[key][subkey] = subvalue
+                    elif isinstance(value, list):
+                        if not isinstance(merged_content[key], list):
+                            merged_content[key] = []
+                        merged_content[key].extend(value)
                 else:
-                    merged_content[key] = value if value else ""
+                    merged_content[key] = value
     
     if errors:
         logger.error(f"Errors in processing: {errors}")
