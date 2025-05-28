@@ -1146,15 +1146,13 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
             {"role": "system", "content": ai_prompt},
             {
                 "role": "user",
-                "content": f"Input Text (Chunk {chunk_index}):\n{chunk_text}\n\nTables:\n{json.dumps(tables)}\n\n"
-                           "Output a JSON object with section headers from the template and semantically mapped content from the source. "
-                           "Combine or split source sections as needed to fit the template's structure."
+                "content": f"Input Text (Chunk {chunk_index}):\n{chunk_text}\n\nTables:\n{json.dumps(tables)}"
             }
         ]
         payload = {
-            "model": "gpt-3.5-turbo",
+            "model": "gpt-3.5-turbo-0125",  # Updated model
             "messages": messages,
-            "max_tokens": 6000,  # Increased for large documents
+            "max_tokens": 6000,
             "temperature": 0.7
         }
         try:
@@ -1172,9 +1170,9 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
                 logger.error(f"JSON validation error (chunk {chunk_index}): {str(e)}")
                 return {"error": f"Invalid JSON in chunk {chunk_index}: {str(e)}"}
         except requests.exceptions.HTTPError as e:
-            error_response = response.json() if response else {"error": str(e)}
+            error_response = response.text  # Log full response
             logger.error(f"API Error (chunk {chunk_index}): {response.status_code} - {error_response}")
-            return {"error": f"HTTP Error in chunk {chunk_index}: {str(e)}"}
+            return {"error": f"HTTP Error in chunk {chunk_index}: {response.status_code} - {error_response}"}
         except Exception as e:
             logger.error(f"Unexpected Error (chunk {chunk_index}): {str(e)}")
             return {"error": str(e)}
