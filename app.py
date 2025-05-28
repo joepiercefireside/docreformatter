@@ -706,9 +706,11 @@ def load_client():
         elif prompt_name and prompt_name != 'Custom':
             conn = get_db_connection()
             cur = conn.cursor()
+            # Fetch prompt for client_id or global (client_id='')
             cur.execute(
                 "SELECT prompt->'prompt' AS prompt_content FROM settings "
-                "WHERE user_id = %s AND client_id = %s AND prompt_name = %s AND prompt IS NOT NULL LIMIT 1",
+                "WHERE user_id = %s AND (client_id = %s OR client_id = '') AND prompt_name = %s AND prompt IS NOT NULL "
+                "ORDER BY client_id DESC LIMIT 1",
                 (current_user.id, client_id, prompt_name)
             )
             result = cur.fetchone()
