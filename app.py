@@ -1225,12 +1225,14 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
             for key, value in result.items():
                 if key in merged_content:
                     if isinstance(value, str) and isinstance(merged_content[key], str):
-                        merged_content[key] += "\n" + value if value else ""
+                        if value not in merged_content[key].split("\n"):
+                            merged_content[key] += "\n" + value if value else ""
                     elif isinstance(value, dict) and isinstance(merged_content[key], dict):
                         for subkey, subvalue in value.items():
                             if subkey in merged_content[key]:
                                 if isinstance(subvalue, str) and isinstance(merged_content[key][subkey], str):
-                                    merged_content[key][subkey] += "\n" + subvalue if subvalue else ""
+                                    if subvalue not in merged_content[key][subkey].split("\n"):
+                                        merged_content[key][subkey] += "\n" + subvalue if subvalue else ""
                                 elif isinstance(subvalue, list) and isinstance(merged_content[key][subkey], list):
                                     merged_content[key][subkey].extend([x for x in subvalue if x not in merged_content[key][subkey]])
                                 elif isinstance(subvalue, dict) and isinstance(merged_content[key][subkey], dict):
@@ -1243,7 +1245,7 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
                     elif isinstance(value, list) and isinstance(merged_content[key], list):
                         merged_content[key].extend([x for x in value if x not in merged_content[key]])
                     else:
-                        # Prioritize newer value if types conflict
+                        # Overwrite with newer value to avoid conflicts
                         merged_content[key] = value
                 else:
                     merged_content[key] = value
@@ -1334,31 +1336,39 @@ def create_reformatted_docx(sections, output_path, client_id=None, user_id=None)
         doc = Document(template_path) if os.path.exists(template_path) else Document()
         
         def apply_template_style(paragraph, template_para):
-            if template_para:
+            if template_para and template_para.runs:
                 for run in paragraph.runs:
                     run.bold = template_para.runs[0].bold if template_para.runs else False
                     run.underline = template_para.runs[0].underline if template_para.runs else False
-                    run.font.name = template_para.runs[0].font.name if template_para.runs else "Calibri"
+                    run.font.name = template_para.runs[0].font.name if template_para.runs else "Arial"
                     run.font.size = template_para.runs[0].font.size if template_para.runs else Pt(12)
+            paragraph.style = template_para.style if template_para and template_para.style else None
         
-        def add_content(paragraph, content):
+        def format_content(content, indent=0):
             if isinstance(content, str):
-                paragraph.add_run(content)
+                return content.strip()
             elif isinstance(content, list):
+                formatted = []
                 for item in content:
                     if isinstance(item, str):
-                        paragraph.add_run(item + "\n")
+                        formatted.append("• " + item.strip())
                     elif isinstance(item, dict):
                         for subkey, subvalue in item.items():
-                            paragraph.add_run(f"{subkey}: ")
-                            add_content(paragraph, subvalue)
-                            paragraph.add_run("\n")
+                            subcontent = format_content(subvalue, indent + 1)
+                            if subcontent:
+                                formatted.append(f"{'  ' * indent}{subkey}: {subcontent}")
+                    elif isinstance(item, list):
+                        formatted.extend(format_content(item, indent + 1))
+                return "\n".join(formatted)
             elif isinstance(content, dict):
+                formatted = []
                 for subkey, subvalue in content.items():
-                    paragraph.add_run(f"{subkey}: ")
-                    add_content(paragraph, subvalue)
-                    paragraph.add_run("\n")
-        
+                    subcontent = format_content(subvalue, indent + 1)
+                    if subcontent:
+                        formatted.append(f"{'  ' * indent}{subkey}: {subcontent}")
+                return "\n".join(formatted)
+            return ""
+
         # Load template for styling
         template_doc = Document(template_path) if os.path.exists(template_path) else None
         template_paras = template_doc.paragraphs if template_doc else []
@@ -1370,22 +1380,53 @@ def create_reformatted_docx(sections, output_path, client_id=None, user_id=None)
             doc.save(output_path)
             return
         
+        # Map JSON keys to template headers
+        key_mapping = {
+            "name": "Name",
+            "contact": "Contact",
+            "contact_information": "Contact",
+            "professional summary": "Professional Summary",
+            "summary": "Professional Summary",
+            "core competencies": "Core Competencies",
+            "skills": "Core Competencies",
+            "professional_experience": "Professional Experience",
+            "work_experience": "Professional Experience",
+            "work experience": "Professional Experience",
+            "experience": "Professional Experience",
+            "education": "Education",
+            "affiliations": "Affiliations",
+            "professional_affiliations": "Affiliations",
+            "certifications": "Certifications",
+            "projects_awards": "Projects and Awards",
+            "projects & awards": "Projects and Awards"
+        }
+        
         # Add sections dynamically
+        processed_keys = set()
         for key, value in sections.items():
-            if key == "references":
-                if value:
-                    para = doc.add_paragraph("References")
-                    apply_template_style(para, next((p for p in template_paras if "references" in p.text.lower()), None))
-                    for ref in value:
-                        para = doc.add_paragraph()
-                        add_content(para, ref)
-                        apply_template_style(para, next((p for p in template_paras if p.text.strip()), None))
+            normalized_key = key.lower()
+            if normalized_key in processed_keys:
+                continue
+            processed_keys.add(normalized_key)
+            
+            display_key = key_mapping.get(normalized_key, key.capitalize())
+            if display_key == "References" and value:
+                para = doc.add_paragraph("References")
+                apply_template_style(para, next((p for p in template_paras if "references" in p.text.lower()), template_paras[0] if template_paras else None))
+                for ref in value:
+                    para = doc.add_paragraph(ref, style="ListBullet")
+                    apply_template_style(para, next((p for p in template_paras if p.style and "bullet" in p.style.name.lower()), template_paras[0] if template_paras else None))
             else:
-                para = doc.add_paragraph(key.capitalize())
-                apply_template_style(para, next((p for p in template_paras if key.lower() in p.text.lower()), None))
-                para = doc.add_paragraph()
-                add_content(para, value)
-                apply_template_style(para, next((p for p in template_paras if p.text.strip()), None))
+                para = doc.add_paragraph(display_key)
+                apply_template_style(para, next((p for p in template_paras if display_key.lower() in p.text.lower()), template_paras[0] if template_paras else None))
+                
+                formatted_content = format_content(value)
+                if formatted_content:
+                    lines = formatted_content.split("\n")
+                    for line in lines:
+                        if line.strip():
+                            para = doc.add_paragraph(line, style="ListBullet" if line.startswith("•") else None)
+                            apply_template_style(para, next((p for p in template_paras if p.style and "bullet" in p.style.name.lower()), template_paras[0] if template_paras else None))
         
         doc.save(output_path)
     except Exception as e:
