@@ -1144,7 +1144,7 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
     payload = {
         "model": "gpt-3.5-turbo",
         "messages": messages,
-        "max_tokens": 2000,
+        "max_tokens": 4000,  # Increased to handle larger responses
         "temperature": 0.7
     }
     try:
@@ -1171,7 +1171,7 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
             logger.error(f"JSON validation error: {str(e)}")
             return {
                 "error": f"Invalid JSON from AI: {str(e)}",
-                "summary": "Unable to categorize due to AI response error",
+                "summary": "Unable to reformat due to AI response error",
                 "background": content["text"][:500] if content["text"] else "",
                 "monograph": "",
                 "real_world": "",
