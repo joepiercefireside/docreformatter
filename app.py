@@ -1144,13 +1144,10 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
     def process_chunk(chunk_text, tables, chunk_index):
         messages = [
             {"role": "system", "content": ai_prompt},
-            {
-                "role": "user",
-                "content": f"Input Text (Chunk {chunk_index}):\n{chunk_text}\n\nTables:\n{json.dumps(tables)}"
-            }
+            {"role": "user", "content": f"Input Text (Chunk {chunk_index}):\n{chunk_text}\n\nTables:\n{json.dumps(tables)}"}
         ]
         payload = {
-            "model": "gpt-3.5-turbo-0125",  # Updated model
+            "model": "gpt-3.5-turbo-0125",
             "messages": messages,
             "max_tokens": 4096,
             "temperature": 0.7
@@ -1158,19 +1155,53 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
         try:
             response = requests.post(AI_API_URL, headers=headers, json=payload)
             response.raise_for_status()
-            data = response.json()
-            raw_content = data["choices"][0]["message"]["content"]
-            logger.info(f"Raw AI response (chunk {chunk_index}): {raw_content[:1000]}...")
+            if not response.text:
+                logger.error(f"Empty response from API (chunk {chunk_index})")
+                return {"error": f"Empty response from API in chunk {chunk_index}"}
             try:
-                parsed_content = json.loads(raw_content)
-                if not isinstance(parsed_content, dict):
-                    raise ValueError("AI response is not a JSON object")
-                return parsed_content
-            except json.JSONDecodeError as e:
-                logger.error(f"JSON validation error (chunk {chunk_index}): {str(e)}")
-                return {"error": f"Invalid JSON in chunk {chunk_index}: {str(e)}"}
+                data = response.json()
+                if "choices" not in data or not data["choices"]:
+                    logger.error(f"No choices in API response (chunk {chunk_index}): {data}")
+                    return {"error": f"No valid choices in API response for chunk {chunk_index}"}
+                raw_content = data["choices"][0]["message"]["content"]
+                logger.info(f"Raw AI response (chunk {chunk_index}): {raw_content[:1000]}...")
+                try:
+                    parsed_content = json.loads(raw_content)
+                    if not isinstance(parsed_content, dict):
+                        raise ValueError("AI response is not a JSON object")
+                    return parsed_content
+                except json.JSONDecodeError as e:
+                    logger.error(f"JSON validation error (chunk {chunk_index}): {str(e)}, raw: {raw_content[:1000]}")
+                    # Attempt to extract content from markdown/plain text
+                    try:
+                        # Basic parsing for markdown headers and content
+                        lines = raw_content.split("\n")
+                        parsed_content = {}
+                        current_key = None
+                        current_value = []
+                        for line in lines:
+                            line = line.strip()
+                            if line.startswith("**") and line.endswith("**"):
+                                if current_key:
+                                    parsed_content[current_key] = "\n".join(current_value).strip()
+                                    current_value = []
+                                current_key = line.strip("**").strip()
+                            elif line:
+                                current_value.append(line)
+                        if current_key and current_value:
+                            parsed_content[current_key] = "\n".join(current_value).strip()
+                        if parsed_content:
+                            logger.info(f"Parsed markdown content (chunk {chunk_index}): {parsed_content}")
+                            return parsed_content
+                        return {"error": f"Failed to parse non-JSON content in chunk {chunk_index}"}
+                    except Exception as parse_e:
+                        logger.error(f"Markdown parsing error (chunk {chunk_index}): {str(parse_e)}")
+                        return {"error": f"Invalid JSON in chunk {chunk_index}: {str(e)}"}
+            except ValueError as e:
+                logger.error(f"Invalid JSON response (chunk {chunk_index}): {response.text[:1000]}")
+                return {"error": f"Invalid JSON response in chunk {chunk_index}: {response.text[:1000]}"}
         except requests.exceptions.HTTPError as e:
-            error_response = response.text  # Log full response
+            error_response = response.text
             logger.error(f"API Error (chunk {chunk_index}): {response.status_code} - {error_response}")
             return {"error": f"HTTP Error in chunk {chunk_index}: {response.status_code} - {error_response}"}
         except Exception as e:
