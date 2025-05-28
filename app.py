@@ -1152,7 +1152,7 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
         payload = {
             "model": "gpt-3.5-turbo-0125",  # Updated model
             "messages": messages,
-            "max_tokens": 6000,
+            "max_tokens": 4096,
             "temperature": 0.7
         }
         try:
