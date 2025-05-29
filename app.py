@@ -14,7 +14,6 @@ from authlib.integrations.flask_client import OAuth
 import secrets
 import logging
 import concurrent.futures
-from sqlalchemy.sql import text
 from tempfile import TemporaryDirectory
 
 app = Flask(__name__)
@@ -742,27 +741,20 @@ def load_client():
 @login_required
 def index():
     clients = get_user_clients(current_user.id)
-    templates = []
-    prompts = []
-    selected_client = None
+    selected_client = request.form.get('client', '') if request.method == 'POST' else ''
     selected_template = None
-    prompt_name = None
-    prompt_content = None
+    prompt_name = 'Custom'
+    prompt_content = ''
 
-    # Populate global templates and prompts on initial load
-    templates = get_templates_for_client('', current_user.id)
-    prompts = get_prompts_for_client('', current_user.id)
+    # Always fetch templates and prompts, including global ones
+    templates = get_templates_for_client(selected_client, current_user.id)
+    prompts = get_prompts_for_client(selected_client, current_user.id)
 
     if request.method == 'POST':
-        selected_client = request.form.get('client', '')
         selected_template = request.form.get('template')
-        prompt_name = request.form.get('prompt_name')
+        prompt_name = request.form.get('prompt_name', 'Custom')
         source_file = request.files.get('source_file')
         ai_prompt = request.form.get('ai_prompt')
-
-        if selected_client or selected_client == '':
-            templates = get_templates_for_client(selected_client, current_user.id)
-            prompts = get_prompts_for_client(selected_client, current_user.id)
 
         if source_file and source_file.filename.endswith('.docx'):
             template_name = selected_template if selected_template else None
@@ -773,7 +765,7 @@ def index():
                     "SELECT prompt->'prompt' AS prompt_content "
                     "FROM settings "
                     "WHERE user_id = %s AND (client_id = %s OR client_id = '') AND template_name = %s AND prompt IS NOT NULL LIMIT 1",
-                    (current_user.id, selected_client or '', template_name)
+                    (current_user.id, selected_client, template_name)
                 )
                 result = cur.fetchone()
                 cur.close()
@@ -804,14 +796,14 @@ def index():
                 "SELECT prompt->'prompt' AS prompt_content, prompt_name "
                 "FROM settings "
                 "WHERE user_id = %s AND (client_id = %s OR client_id = '') AND template_name = %s LIMIT 1",
-                (current_user.id, selected_client or '', selected_template)
+                (current_user.id, selected_client, selected_template)
             )
             result = cur.fetchone()
             cur.close()
             conn.close()
             if result:
-                prompt_name = result[1] or 'Custom'
                 prompt_content = result[0] or ''
+                prompt_name = result[1] or 'Custom'
 
     return render_template('index.html', clients=clients, templates=templates, prompts=prompts,
                          selected_client=selected_client, selected_template=selected_template,
@@ -901,16 +893,10 @@ def get_templates_for_client(client_id, user_id):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        if client_id:
-            cur.execute(
-                "SELECT template_name, prompt_name FROM settings WHERE user_id = %s AND (client_id = %s OR client_id = '') AND template IS NOT NULL",
-                (user_id, client_id)
-            )
-        else:
-            cur.execute(
-                "SELECT template_name, prompt_name FROM settings WHERE user_id = %s AND client_id = '' AND template IS NOT NULL",
-                (user_id,)
-            )
+        cur.execute(
+            "SELECT template_name, prompt_name FROM settings WHERE user_id = %s AND (client_id = %s OR client_id = '') AND template IS NOT NULL",
+            (user_id, client_id or '')
+        )
         templates = [{'template_name': row[0], 'prompt_name': row[1]} for row in cur.fetchall()]
         cur.close()
         conn.close()
@@ -924,16 +910,10 @@ def get_prompts_for_client(client_id, user_id):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        if client_id:
-            cur.execute(
-                "SELECT prompt_name, prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND (client_id = %s OR client_id = '') AND prompt IS NOT NULL AND template_name IS NULL",
-                (user_id, client_id)
-            )
-        else:
-            cur.execute(
-                "SELECT prompt_name, prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND client_id = '' AND prompt IS NOT NULL AND template_name IS NULL",
-                (user_id,)
-            )
+        cur.execute(
+            "SELECT prompt_name, prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND (client_id = %s OR client_id = '') AND prompt IS NOT NULL AND template_name IS NULL",
+            (user_id, client_id or '')
+        )
         prompts = [{'prompt_name': row[0], 'prompt_content': row[1] or ''} for row in cur.fetchall()]
         cur.close()
         conn.close()
