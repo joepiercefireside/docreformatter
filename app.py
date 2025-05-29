@@ -16,6 +16,7 @@ import bcrypt
 from authlib.integrations.flask_client import OAuth
 import secrets
 import logging
+import concurrent.futures
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = '/tmp'
@@ -218,7 +219,7 @@ def logout():
 @app.route('/create_client', methods=['GET', 'POST'])
 @login_required
 def create_client():
-    clients = get_clients(current_user.id)
+    clients = get_user_clients(current_user.id)
     selected_client = request.args.get('selected_client', '')
     prompts = []
     templates = []
@@ -226,13 +227,11 @@ def create_client():
     if selected_client:
         conn = get_db_connection()
         cur = conn.cursor()
-        # Load prompts
         cur.execute(
             "SELECT prompt_name, prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND client_id = %s AND prompt IS NOT NULL AND template_name IS NULL",
             (current_user.id, selected_client)
         )
         prompts = [{'prompt_name': row[0], 'prompt_content': row[1] or ''} for row in cur.fetchall()]
-        # Load templates
         cur.execute(
             "SELECT template_name, prompt_name FROM settings WHERE user_id = %s AND client_id = %s AND template IS NOT NULL",
             (current_user.id, selected_client)
@@ -274,7 +273,7 @@ def create_client():
 @app.route('/create_prompt', methods=['GET', 'POST'])
 @login_required
 def create_prompt():
-    clients = get_clients(current_user.id)
+    clients = get_user_clients(current_user.id)
     selected_client = request.args.get('client_id', '')
     edit_prompt = request.args.get('edit_prompt', '')
     prompts = []
@@ -354,7 +353,6 @@ def create_prompt():
                 flash(f'Failed to update prompt: {str(e)}', 'danger')
                 return redirect(url_for('create_prompt', client_id=client_id))
     
-    # Load prompts for selected client or global
     conn = get_db_connection()
     cur = conn.cursor()
     if selected_client:
@@ -378,13 +376,12 @@ def create_prompt():
 @app.route('/create_template', methods=['GET', 'POST'])
 @login_required
 def create_template():
-    clients = get_clients(current_user.id)
+    clients = get_user_clients(current_user.id)
     selected_client = request.args.get('client_id', '')
     edit_template = request.args.get('edit_template', '')
     templates = []
     prompts = []
     
-    # Load prompts for selected client or global
     conn = get_db_connection()
     cur = conn.cursor()
     if selected_client:
@@ -409,7 +406,6 @@ def create_template():
         template_file = request.files.get('template_file')
         original_template_name = request.form.get('original_template_name', template_name).strip()
         
-        # Use new prompt name if provided
         if prompt_name_new and prompt_content:
             prompt_name = prompt_name_new
         
@@ -426,7 +422,6 @@ def create_template():
             try:
                 conn = get_db_connection()
                 cur = conn.cursor()
-                # Check if template name exists
                 cur.execute(
                     "SELECT id FROM settings WHERE user_id = %s AND client_id = %s AND template_name = %s",
                     (current_user.id, client_id, template_name)
@@ -436,7 +431,6 @@ def create_template():
                     cur.close()
                     conn.close()
                     return redirect(url_for('create_template', client_id=client_id))
-                # Check if prompt name exists if new
                 if prompt_name_new:
                     cur.execute(
                         "SELECT id FROM settings WHERE user_id = %s AND client_id = %s AND prompt_name = %s AND template_name IS NULL",
@@ -448,7 +442,6 @@ def create_template():
                         conn.close()
                         return redirect(url_for('create_template', client_id=client_id))
                     save_prompt(prompt_content, client_id, current_user.id, prompt_name)
-                # Fetch existing prompt_content for selected prompt
                 prompt_json = None
                 if prompt_name and not prompt_name_new:
                     cur.execute(
@@ -463,7 +456,6 @@ def create_template():
                         cur.close()
                         conn.close()
                         return redirect(url_for('create_template', client_id=client_id))
-                # Save template
                 file_data = template_file.read()
                 cur.execute(
                     "INSERT INTO settings (user_id, client_id, prompt, prompt_name, template, template_name) "
@@ -490,7 +482,6 @@ def create_template():
             try:
                 conn = get_db_connection()
                 cur = conn.cursor()
-                # Check if new template_name conflicts
                 if template_name != original_template_name:
                     cur.execute(
                         "SELECT id FROM settings WHERE user_id = %s AND client_id = %s AND template_name = %s",
@@ -501,7 +492,6 @@ def create_template():
                         cur.close()
                         conn.close()
                         return redirect(url_for('create_template', client_id=client_id))
-                # Check if new prompt_name conflicts
                 if prompt_name_new:
                     cur.execute(
                         "SELECT id FROM settings WHERE user_id = %s AND client_id = %s AND prompt_name = %s AND template_name IS NULL",
@@ -513,7 +503,6 @@ def create_template():
                         conn.close()
                         return redirect(url_for('create_template', client_id=client_id))
                     save_prompt(prompt_content, client_id, current_user.id, prompt_name)
-                # Fetch existing prompt_content for selected prompt
                 prompt_json = None
                 if prompt_name and not prompt_name_new:
                     cur.execute(
@@ -523,7 +512,6 @@ def create_template():
                     result = cur.fetchone()
                     if result:
                         prompt_json = result[0]
-                # Update template
                 if template_file and template_file.filename.endswith('.docx'):
                     cur.execute(
                         "UPDATE settings SET template = %s, prompt = %s, prompt_name = %s, template_name = %s "
@@ -551,9 +539,6 @@ def create_template():
                 flash(f'Failed to update template: {str(e)}', 'danger')
                 return redirect(url_for('create_template', client_id=client_id))
     
-    # Load templates for selected client or global
-    conn = get_db_connection()
-    cur = conn.cursor()
     if selected_client:
         cur.execute(
             "SELECT template_name, prompt_name FROM settings WHERE user_id = %s AND (client_id = %s OR client_id = '') AND template IS NOT NULL",
@@ -757,382 +742,91 @@ def load_client():
 @app.route('/', methods=['GET', 'POST'])
 @login_required
 def index():
-    clients = get_clients(current_user.id)
-    selected_client = session.get('selected_client')
-    selected_template = session.get('selected_template')
-    selected_prompt = session.get('selected_prompt', 'Custom')
-    prompt_content = ""
+    clients = get_user_clients(current_user.id)
     templates = []
     prompts = []
-    has_template_file = False
+    selected_client = None
+    selected_template = None
+    prompt_name = None
+    prompt_content = None
 
     if request.method == 'POST':
-        action = request.form.get('action')
-        client_id = request.form.get('client_id', '')
+        selected_client = request.form.get('client')
+        selected_template = request.form.get('template')
+        prompt_name = request.form.get('prompt_name')
+        source_file = request.files['source_file']
+        ai_prompt = request.form.get('ai_prompt')
 
-        if action == 'select_client':
-            session['selected_client'] = client_id if client_id in clients or client_id == '' else None
-            session.pop('selected_template', None)
-            session.pop('selected_prompt', None)
-            selected_client = client_id if client_id in clients or client_id == '' else None
-            selected_template = None
-            selected_prompt = 'Custom'
-            if client_id:
-                flash(f'Selected client: {client_id}', 'success')
-
-        elif action == 'select_template':
-            template_name = request.form.get('template_name')
-            if template_name:
-                session['selected_template'] = template_name
-                selected_template = template_name
-                conn = get_db_connection()
-                cur = conn.cursor()
-                cur.execute(
-                    "SELECT prompt->'prompt' AS prompt_content, prompt_name, template IS NOT NULL AS has_file "
-                    "FROM settings WHERE user_id = %s AND (client_id = %s OR client_id = '') AND template_name = %s LIMIT 1",
-                    (current_user.id, selected_client or '', template_name)
-                )
-                result = cur.fetchone()
-                cur.close()
-                conn.close()
+        if selected_client and source_file and source_file.filename.endswith('.docx'):
+            template_name = selected_template if selected_template else None
+            if template_name and not ai_prompt:
+                query = text("""
+                    SELECT prompt->'prompt' AS prompt_content
+                    FROM settings
+                    WHERE user_id = :user_id
+                      AND prompt_name = (
+                          SELECT prompt_name
+                          FROM settings
+                          WHERE user_id = :user_id
+                            AND template_name = :template_name
+                            AND template IS NOT NULL
+                          LIMIT 1
+                      )
+                    LIMIT 1
+                """)
+                result = db.session.execute(query, {
+                    'user_id': current_user.id,
+                    'template_name': template_name
+                }).fetchone()
                 if result:
-                    prompt_content = result[0] or ''
-                    selected_prompt = result[1] or 'Custom'
-                    has_template_file = result[2]
-                    session['selected_prompt'] = selected_prompt
-                    flash(f'Selected template: {template_name}', 'success')
+                    ai_prompt = result.prompt_content
                 else:
-                    selected_template = None
-                    selected_prompt = 'Custom'
-                    prompt_content = ''
-                    session.pop('selected_template', None)
-                    session.pop('selected_prompt', None)
-                    flash(f'Template {template_name} not found', 'danger')
-            else:
-                session.pop('selected_template', None)
-                session.pop('selected_prompt', None)
-                selected_template = None
-                selected_prompt = 'Custom'
-                prompt_content = ""
+                    flash('No prompt found for the selected template.', 'error')
+                    return redirect(url_for('index'))
 
-        elif action == 'upload_document':
-            document_file = request.files.get('document_file')
-            template_name = request.form.get('template_name')
-            prompt_name = request.form.get('prompt_name', 'Custom')
-            custom_prompt = request.form.get('custom_prompt', '').strip()
-            template_file = request.files.get('template_file')
+            try:
+                content = process_docx(source_file)
+                with TemporaryDirectory() as temp_dir:
+                    temp_template_path = os.path.join(temp_dir, 'temp_template.docx')
+                    fetch_template(temp_template_path, selected_client, current_user.id, template_name)
+                    output_path = os.path.join(temp_dir, 'reformatted_document.docx')
+                    sections = call_ai_api(content, selected_client, current_user.id, prompt_name, custom_prompt=ai_prompt)
+                    create_reformatted_docx(sections, output_path, selected_client, current_user.id)
+                    return send_file(output_path, as_attachment=True, download_name='reformatted_document.docx')
+            except Exception as e:
+                logger.error(f"Error processing document: {str(e)}")
+                flash(f"Error processing document: {str(e)}", 'error')
 
-            if not document_file or not document_file.filename.endswith('.docx'):
-                flash('Valid .docx document required', 'danger')
-                return redirect(url_for('index'))
-
-            if prompt_name == 'Custom' and not custom_prompt:
-                flash('Please enter a custom prompt or select an existing one', 'danger')
-                return redirect(url_for('index'))
-
-            filename = secure_filename(document_file.filename)
-            input_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-            output_path = os.path.join(app.config['UPLOAD_FOLDER'], f"reformatted_{filename}")
-            document_file.save(input_path)
-            content = extract_content_from_docx(input_path)
-
-            # Handle prompt
-            ai_prompt = custom_prompt if custom_prompt else load_prompt_for_template(selected_client or '', current_user.id, template_name) if template_name else load_prompt(selected_client or '', current_user.id, prompt_name) if prompt_name != 'Custom' else DEFAULT_AI_PROMPT
-
-            # Handle template
-            temp_template_path = os.path.join(app.config['UPLOAD_FOLDER'], 'temp_template.docx')
-            template_used = False
-            if template_file and template_file.filename.endswith('.docx'):
-                template_file.save(temp_template_path)
-                template_used = True
-            elif template_name:
-                template_used = load_template(temp_template_path, selected_client or '', current_user.id, template_name)
-
-            sections = call_ai_api(content, selected_client, current_user.id, prompt_name, custom_prompt=ai_prompt)
-            if "error" in sections:
-                flash(f"AI processing failed: {sections['error']}", 'danger')
-                os.remove(input_path)
-                if template_used and os.path.exists(temp_template_path):
-                    os.remove(temp_template_path)
-                return redirect(url_for('index'))
-            sections["references"] = content["references"]
-            create_reformatted_docx(sections, output_path, client_id=selected_client, user_id=current_user.id)
-            response = send_file(output_path, as_attachment=True, download_name=f"reformatted_{filename}")
-            os.remove(input_path)
-            if template_used and os.path.exists(temp_template_path):
-                os.remove(temp_template_path)
-            os.remove(output_path)
-            return response
-
-    # Handle GET with query parameter
-    client_id = request.args.get('client_id', '')
-    if client_id and (client_id in clients or client_id == ''):
-        session['selected_client'] = client_id
-        session.pop('selected_template', None)
-        session.pop('selected_prompt', None)
-        selected_client = client_id
-        selected_template = None
-        selected_prompt = 'Custom'
-
-    # Load templates and prompts
-    conn = get_db_connection()
-    cur = conn.cursor()
-    if selected_client:
-        cur.execute(
-            "SELECT template_name, prompt_name FROM settings WHERE user_id = %s AND (client_id = %s OR client_id = '') AND template IS NOT NULL",
-            (current_user.id, selected_client)
-        )
-        templates = [{'template_name': row[0], 'prompt_name': row[1]} for row in cur.fetchall()]
-        cur.execute(
-            "SELECT prompt_name, prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND (client_id = %s OR client_id = '') AND prompt IS NOT NULL AND template_name IS NULL",
-            (current_user.id, selected_client)
-        )
-        prompts = [{'prompt_name': row[0], 'prompt_content': row[1] or ''} for row in cur.fetchall()]
-    else:
-        cur.execute(
-            "SELECT template_name, prompt_name FROM settings WHERE user_id = %s AND client_id = '' AND template IS NOT NULL",
-            (current_user.id,)
-        )
-        templates = [{'template_name': row[0], 'prompt_name': row[1]} for row in cur.fetchall()]
-        cur.execute(
-            "SELECT prompt_name, prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND client_id = '' AND prompt IS NOT NULL AND template_name IS NULL",
-            (current_user.id,)
-        )
-        prompts = [{'prompt_name': row[0], 'prompt_content': row[1] or ''} for row in cur.fetchall()]
-    cur.close()
-    conn.close()
-    logger.info(f"Templates for client {selected_client or 'global'}: {templates}")
-    logger.info(f"Prompts for client {selected_client or 'global'}: {prompts}")
-
-    if selected_template:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT prompt->'prompt' AS prompt_content, prompt_name, template IS NOT NULL AS has_file "
-            "FROM settings WHERE user_id = %s AND (client_id = %s OR client_id = '') AND template_name = %s LIMIT 1",
-            (current_user.id, selected_client or '', selected_template)
-        )
-        result = cur.fetchone()
-        cur.close()
-        conn.close()
+    if request.form.get('client'):
+        selected_client = request.form.get('client')
+        templates = get_templates_for_client(selected_client, current_user.id)
+        prompts = get_prompts_for_client(selected_client, current_user.id)
+    if request.form.get('template'):
+        selected_template = request.form.get('template')
+        query = text("""
+            SELECT s2.prompt->'prompt' AS prompt_content, s2.prompt_name
+            FROM settings s1
+            JOIN settings s2 ON s1.prompt_name = s2.prompt_name
+            WHERE s1.user_id = :user_id
+              AND s1.template_name = :template_name
+              AND s2.user_id = :user_id
+            LIMIT 1
+        """)
+        result = db.session.execute(query, {
+            'user_id': current_user.id,
+            'template_name': selected_template
+        }).fetchone()
         if result:
-            prompt_content = result[0] or ''
-            selected_prompt = result[1] or 'Custom'
-            has_template_file = result[2]
-        else:
-            selected_template = None
-            selected_prompt = 'Custom'
-            prompt_content = ''
+            prompt_name = result.prompt_name
+            prompt_content = result.prompt_content
 
-    return render_template('index.html', clients=clients, selected_client=selected_client, templates=templates, prompts=prompts, selected_template=selected_template, selected_prompt=selected_prompt, prompt_content=prompt_content, has_template_file=has_template_file)
+    return render_template('index.html', clients=clients, templates=templates, prompts=prompts,
+                         selected_client=selected_client, selected_template=selected_template,
+                         prompt_name=prompt_name, prompt_content=prompt_content)
 
-# Existing functionality
+# API and document processing
 AI_API_URL = os.environ.get('AI_API_URL', 'https://api.openai.com/v1/chat/completions')
 API_KEY = os.environ.get('API_KEY', 'your-api-key')
-
-DEFAULT_AI_PROMPT = """You are a medical document analyst. Analyze the provided document content and categorize it into the following sections based on the input text and tables:
-- Summary: A concise overview of the drug, its purpose, and key findings.
-- Background: Context about the disease or condition the drug treats.
-- Monograph: Official prescribing information, usage guidelines, or clinical details.
-- Real-World Experiences: Patient or clinician experiences, if present (else empty).
-- Enclosures: Descriptions of supporting documents, posters, or additional materials.
-- Tables: Assign tables to appropriate sections (e.g., 'Patient Demographics', 'Adverse Events') based on their content.
-Return a JSON object with these keys and the corresponding content extracted or rewritten from the input. Preserve references separately. Ensure the response is valid JSON. For tables, return a dictionary where keys are descriptive section names and values are lists of rows, each row being a list of cell values. Focus on accurately interpreting and summarizing the source material, avoiding any formatting instructions."""
-
-def load_prompt(client_id=None, user_id=None, prompt_name=None):
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        if client_id is not None and user_id and prompt_name:
-            cur.execute(
-                "SELECT prompt->'prompt' AS prompt_content FROM settings WHERE client_id = %s AND user_id = %s AND prompt_name = %s AND prompt IS NOT NULL AND template_name IS NULL ORDER BY created_at DESC LIMIT 1",
-                (client_id, user_id, prompt_name)
-            )
-        elif client_id is not None and user_id:
-            cur.execute(
-                "SELECT prompt->'prompt' AS prompt_content FROM settings WHERE client_id = %s AND user_id = %s AND prompt IS NOT NULL AND template_name IS NULL ORDER BY created_at DESC LIMIT 1",
-                (client_id, user_id)
-            )
-        else:
-            cur.execute(
-                "SELECT prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND client_id = '' AND prompt IS NOT NULL AND template_name IS NULL ORDER BY created_at DESC LIMIT 1",
-                (user_id,)
-            )
-        result = cur.fetchone()
-        cur.close()
-        conn.close()
-        return result[0] if result and result[0] else DEFAULT_AI_PROMPT
-    except Exception as e:
-        logger.error(f"Error loading prompt: {str(e)}")
-        return DEFAULT_AI_PROMPT
-
-def load_prompt_for_template(client_id, user_id, template_name):
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND client_id = %s AND template_name = %s AND prompt IS NOT NULL ORDER BY created_at DESC LIMIT 1",
-            (user_id, client_id, template_name)
-        )
-        result = cur.fetchone()
-        cur.close()
-        conn.close()
-        return result[0] if result and result[0] else DEFAULT_AI_PROMPT
-    except Exception as e:
-        logger.error(f"Error loading prompt for template: {str(e)}")
-        return DEFAULT_AI_PROMPT
-
-def get_prompt_name_for_template(client_id, user_id, template_name):
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT prompt_name FROM settings WHERE user_id = %s AND client_id = %s AND template_name = %s ORDER BY created_at DESC LIMIT 1",
-            (user_id, client_id, template_name)
-        )
-        result = cur.fetchone()
-        cur.close()
-        conn.close()
-        return result[0] if result else None
-    except Exception as e:
-        logger.error(f"Error getting prompt name for template: {str(e)}")
-        return None
-
-def save_prompt(prompt, client_id, user_id, prompt_name):
-    try:
-        if not prompt_name:
-            raise ValueError(f"Prompt name cannot be empty: prompt_name={prompt_name}")
-        if not prompt:
-            raise ValueError(f"Prompt content cannot be empty")
-        # Sanitize prompt to handle special characters
-        sanitized_prompt = prompt.encode('utf-8', errors='replace').decode('utf-8')
-        client_id = client_id or ''
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO settings (user_id, client_id, prompt, prompt_name) VALUES (%s, %s, %s, %s) "
-            "ON CONFLICT ON CONSTRAINT settings_unique_user_client_prompt_template DO UPDATE SET prompt = EXCLUDED.prompt",
-            (user_id, client_id, Json({'prompt': sanitized_prompt}), prompt_name)
-        )
-        conn.commit()
-        cur.close()
-        conn.close()
-        logger.info(f"Saved prompt '{prompt_name}' for client {client_id or 'global'}, user {user_id}: {sanitized_prompt[:100]}...")
-    except Exception as e:
-        logger.error(f"Error saving prompt: {str(e)}")
-        raise
-
-def save_template(file, client_id, user_id, prompt_name, template_name):
-    try:
-        if not template_name:
-            raise ValueError(f"Template name cannot be empty: template_name={template_name}")
-        if not prompt_name:
-            raise ValueError(f"Prompt name cannot be empty: prompt_name={prompt_name}")
-        client_id = client_id or ''
-        file_data = file.read()
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO settings (user_id, client_id, template, prompt_name, template_name) VALUES (%s, %s, %s, %s, %s) "
-            "ON CONFLICT ON CONSTRAINT settings_unique_user_client_prompt_template DO UPDATE SET template = EXCLUDED.template, prompt_name = EXCLUDED.prompt_name",
-            (user_id, client_id, file_data, prompt_name, template_name)
-        )
-        conn.commit()
-        cur.close()
-        conn.close()
-        logger.info(f"Saved template '{template_name}' for client {client_id or 'global'}, user {user_id}, prompt {prompt_name}")
-    except Exception as e:
-        logger.error(f"Error saving template: {str(e)}")
-        raise
-
-def load_template(output_path, client_id=None, user_id=None, template_name=None):
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        if client_id is not None and user_id and template_name:
-            cur.execute(
-                "SELECT template FROM settings WHERE client_id = %s AND user_id = %s AND template_name = %s AND template IS NOT NULL ORDER BY created_at DESC LIMIT 1",
-                (client_id, user_id, template_name)
-            )
-        elif client_id is not None and user_id:
-            cur.execute(
-                "SELECT template FROM settings WHERE client_id = %s AND user_id = %s AND template IS NOT NULL ORDER BY created_at DESC LIMIT 1",
-                (client_id, user_id)
-            )
-        else:
-            cur.execute(
-                "SELECT template FROM settings WHERE user_id = %s AND client_id = '' AND template IS NOT NULL ORDER BY created_at DESC LIMIT 1",
-                (user_id,)
-            )
-        result = cur.fetchone()
-        cur.close()
-        conn.close()
-        if result and result[0]:
-            with open(output_path, 'wb') as f:
-                f.write(result[0])
-            return True
-        return False
-    except Exception as e:
-        logger.error(f"Error loading template: {str(e)}")
-        return False
-
-def get_clients(user_id):
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT DISTINCT client_id FROM settings WHERE user_id = %s AND client_id IS NOT NULL AND client_id != ''",
-            (user_id,)
-        )
-        clients = [row[0] for row in cur.fetchall()]
-        cur.close()
-        conn.close()
-        logger.info(f"Fetched clients for user {user_id}: {clients}")
-        return clients
-    except Exception as e:
-        logger.error(f"Error getting clients: {str(e)}")
-        return []
-
-def extract_content_from_docx(file_path):
-    try:
-        doc = Document(file_path)
-        content = {"text_chunks": [], "tables": [], "references": []}
-        in_references = False
-        chunk = []
-        chunk_size = 1000  # Characters per chunk for large files
-        current_chunk_length = 0
-
-        for para in doc.paragraphs:
-            text = para.text.strip()
-            if text:
-                if text.lower().startswith("references"):
-                    in_references = True
-                    continue
-                if in_references:
-                    content["references"].append(text)
-                else:
-                    chunk.append(text)
-                    current_chunk_length += len(text)
-                    if current_chunk_length >= chunk_size:
-                        content["text_chunks"].append("\n".join(chunk))
-                        chunk = []
-                        current_chunk_length = 0
-        if chunk:
-            content["text_chunks"].append("\n".join(chunk))
-
-        for table in doc.tables:
-            table_data = []
-            for row in table.rows:
-                row_data = [cell.text.strip() for cell in row.cells if cell.text.strip()]
-                if row_data:
-                    table_data.append(row_data)
-            if table_data:
-                logger.info(f"Extracted table: {table_data}")
-                content["tables"].append(table_data)
-        return content
-    except Exception as e:
-        logger.error(f"Error extracting content from docx: {str(e)}")
-        raise
 
 def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_prompt=None):
     headers = {
@@ -1143,17 +837,28 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
     
     def process_chunk(chunk_text, tables, chunk_index):
         messages = [
-            {"role": "system", "content": ai_prompt},
-            {"role": "user", "content": f"Input Text (Chunk {chunk_index}):\n{chunk_text}\n\nTables:\n{json.dumps(tables)}"}
+            {
+                "role": "system",
+                "content": ai_prompt + "\nEnsure the response is strictly valid JSON with proper delimiters (e.g., commas), no trailing or incomplete content, and all keys and values properly closed. Use JSON mode if available. For tables, include their text content as lists. For images, describe their content or extract text if possible."
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": f"Input Text (Chunk {chunk_index}):\n{chunk_text}\n\nTables:\n{json.dumps(tables)}"}
+                    # Add image handling if applicable (future enhancement)
+                    # {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,<base64_data>"}} 
+                ]
+            }
         ]
         payload = {
-            "model": "gpt-3.5-turbo-0125",
+            "model": "gpt-4o",
             "messages": messages,
-            "max_tokens": 2048,
-            "temperature": 0.7
+            "max_tokens": 4096,
+            "temperature": 0.7,
+            "response_format": {"type": "json_object"}
         }
         try:
-            response = requests.post(AI_API_URL, headers=headers, json=payload, timeout=10)
+            response = requests.post(AI_API_URL, headers=headers, json=payload, timeout=15)
             response.raise_for_status()
             if not response.text:
                 logger.error(f"Empty response from API (chunk {chunk_index})")
@@ -1173,7 +878,20 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
                     return normalized_content
                 except json.JSONDecodeError as e:
                     logger.error(f"JSON validation error (chunk {chunk_index}): {str(e)}, raw: {raw_content[:1000]}")
-                    return {"error": f"Invalid JSON in chunk {chunk_index}: {str(e)}"}
+                    try:
+                        cleaned_content = raw_content.strip()
+                        if not cleaned_content.endswith('}'):
+                            cleaned_content = cleaned_content.rsplit('}', 1)[0] + '}'
+                        if not cleaned_content.startswith('{'):
+                            cleaned_content = '{' + cleaned_content.lstrip('{')
+                        parsed_content = json.loads(cleaned_content)
+                        if not isinstance(parsed_content, dict):
+                            raise ValueError("Cleaned AI response is not a JSON object")
+                        normalized_content = {k.lower(): v for k, v in parsed_content.items()}
+                        return normalized_content
+                    except json.JSONDecodeError as e2:
+                        logger.error(f"Failed to fix JSON (chunk {chunk_index}): {str(e2)}")
+                        return {"error": f"Invalid JSON in chunk {chunk_index}: {str(e)}"}
             except ValueError as e:
                 logger.error(f"Invalid JSON response (chunk {chunk_index}): {response.text[:1000]}")
                 return {"error": f"Invalid JSON response in chunk {chunk_index}: {response.text[:1000]}"}
@@ -1185,7 +903,6 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
             logger.error(f"Unexpected Error (chunk {chunk_index}): {str(e)}")
             return {"error": str(e)}
 
-    import concurrent.futures
     results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
         futures = [executor.submit(process_chunk, chunk_text, content["tables"], i) for i, chunk_text in enumerate(content["text_chunks"], 1)]
@@ -1194,7 +911,7 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
     
     merged_content = {}
     errors = []
-    processed_items = set()  # Track unique items
+    processed_items = set()
     for result in results:
         if "error" in result:
             errors.append(result["error"])
@@ -1212,7 +929,6 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
                                     merged_content[key][subkey] = (merged_content[key].get(subkey, "") + "\n" + subvalue).strip()
                                     processed_items.add(subvalue)
                             elif isinstance(subvalue, list) and isinstance(merged_content[key].get(subkey, []), list):
-                                # Convert dictionaries to strings for comparison
                                 new_items = []
                                 for item in subvalue:
                                     if isinstance(item, dict):
@@ -1261,72 +977,6 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
     merged_content["references"] = content["references"]
     logger.info(f"Merged AI response: {merged_content}")
     return merged_content
-
-def add_styled_heading(doc, text, level=1):
-    try:
-        para = doc.add_paragraph()
-        run = para.add_run(text)
-        run.bold = True
-        run.underline = True if level == 1 else False
-        run.font.name = "Arial"
-        run.font.size = Pt(14)
-        return para
-    except Exception as e:
-        logger.error(f"Error adding styled heading: {str(e)}")
-        raise
-
-def add_styled_text(doc, text, bullet=False):
-    try:
-        para = doc.add_paragraph(style="List Bullet" if bullet else None)
-        run = para.add_run(text)
-        run.font.name = "Calibri"
-        run.font.size = Pt(12)
-        return para
-    except Exception as e:
-        logger.error(f"Error adding styled text: {str(e)}")
-        raise
-
-def add_styled_table(doc, table_data, section_name):
-    try:
-        if not table_data or not table_data[0] or not any(cell for row in table_data for cell in row):
-            logger.warning(f"Skipping invalid or empty table for section: {section_name}")
-            return None
-        max_cols = max(len(row) for row in table_data)
-        table_data = [row + [""] * (max_cols - len(row)) for row in table_data]
-        logger.info(f"Adding table for {section_name}: {table_data}")
-        table = doc.add_table(rows=len(table_data), cols=max_cols)
-        table.alignment = WD_TABLE_ALIGNMENT.CENTER
-        table.autofit = True
-        for i, row_data in enumerate(table_data):
-            row = table.rows[i]
-            logger.debug(f"Processing row {i}: {row_data}")
-            for j, cell_text in enumerate(row_data):
-                cell = row.cells[j]
-                cell.text = cell_text or ""
-                cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
-                for paragraph in cell.paragraphs:
-                    for run in paragraph.runs:
-                        run.font.name = "Calibri"
-                        run.font.size = Pt(10)
-        for i, row in enumerate(table.rows):
-            for j, cell in enumerate(row.cells):
-                logger.debug(f"Setting borders for cell at row {i}, col {j}")
-                tcPr = cell._tc.get_or_add_tcPr()
-                tcBorders = tcPr.first_child_found_in("w:tcBorders")
-                if not tcBorders:
-                    tcBorders = OxmlElement('w:tcBorders')
-                    tcPr.append(tcBorders)
-                for border_name in ['top', 'left', 'bottom', 'right']:
-                    border = OxmlElement(f'w:{border_name}')
-                    border.set(qn('w:val'), 'single')
-                    border.set(qn('w:sz'), '4')
-                    border.set(qn('w:space'), '0')
-                    border.set(qn('w:color'), 'auto')
-                    tcBorders.append(border)
-        return table
-    except Exception as e:
-        logger.error(f"Error adding styled table for {section_name}: {str(e)}")
-        raise
 
 def create_reformatted_docx(sections, output_path, client_id=None, user_id=None):
     try:
