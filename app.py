@@ -1149,11 +1149,11 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
         payload = {
             "model": "gpt-3.5-turbo-0125",
             "messages": messages,
-            "max_tokens": 2048,  # Reduced to optimize response time
+            "max_tokens": 2048,
             "temperature": 0.7
         }
         try:
-            response = requests.post(AI_API_URL, headers=headers, json=payload, timeout=10)  # Added timeout
+            response = requests.post(AI_API_URL, headers=headers, json=payload, timeout=10)
             response.raise_for_status()
             if not response.text:
                 logger.error(f"Empty response from API (chunk {chunk_index})")
@@ -1169,7 +1169,6 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
                     parsed_content = json.loads(raw_content)
                     if not isinstance(parsed_content, dict):
                         raise ValueError("AI response is not a JSON object")
-                    # Normalize key case
                     normalized_content = {k.lower(): v for k, v in parsed_content.items()}
                     return normalized_content
                 except json.JSONDecodeError as e:
@@ -1186,7 +1185,6 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
             logger.error(f"Unexpected Error (chunk {chunk_index}): {str(e)}")
             return {"error": str(e)}
 
-    # Process text chunks in parallel to reduce time
     import concurrent.futures
     results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
@@ -1194,9 +1192,9 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
         for future in concurrent.futures.as_completed(futures):
             results.append(future.result())
     
-    # Merge results
     merged_content = {}
     errors = []
+    processed_items = set()  # Track unique items to avoid duplicates
     for result in results:
         if "error" in result:
             errors.append(result["error"])
@@ -1204,28 +1202,31 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
             for key, value in result.items():
                 if key in merged_content:
                     if isinstance(value, str) and isinstance(merged_content[key], str):
-                        if value not in merged_content[key].split("\n"):
+                        if value not in processed_items:
                             merged_content[key] += "\n" + value
+                            processed_items.add(value)
                     elif isinstance(value, dict) and isinstance(merged_content[key], dict):
                         for subkey, subvalue in value.items():
-                            if subkey in merged_content[key]:
-                                if isinstance(subvalue, str) and isinstance(merged_content[key][subkey], str):
-                                    if subvalue not in merged_content[key][subkey].split("\n"):
-                                        merged_content[key][subkey] += "\n" + subvalue
-                                elif isinstance(subvalue, list) and isinstance(merged_content[key][subkey], list):
-                                    merged_content[key][subkey].extend([x for x in subvalue if x not in merged_content[key][subkey]])
-                                elif isinstance(subvalue, dict) and isinstance(merged_content[key][subkey], dict):
-                                    merged_content[key][subkey].update(subvalue)
-                                else:
-                                    merged_content[key][subkey] = subvalue
+                            if isinstance(subvalue, str) and isinstance(merged_content[key].get(subkey, ""), str):
+                                if subvalue not in processed_items:
+                                    merged_content[key][subkey] = (merged_content[key].get(subkey, "") + "\n" + subvalue).strip()
+                                    processed_items.add(subvalue)
+                            elif isinstance(subvalue, list) and isinstance(merged_content[key].get(subkey, []), list):
+                                merged_content[key][subkey] = list(set(merged_content[key].get(subkey, []) + subvalue))
+                                processed_items.update(tuple(subvalue) if isinstance(subvalue, list) else [subvalue])
                             else:
                                 merged_content[key][subkey] = subvalue
+                                processed_items.add(str(subvalue))
                     elif isinstance(value, list) and isinstance(merged_content[key], list):
-                        merged_content[key].extend([x for x in value if x not in merged_content[key]])
+                        new_items = [x for x in value if x not in processed_items]
+                        merged_content[key].extend(new_items)
+                        processed_items.update(new_items)
                     else:
                         merged_content[key] = value
+                        processed_items.add(str(value))
                 else:
                     merged_content[key] = value
+                    processed_items.add(str(value))
     
     if errors:
         logger.error(f"Errors in processing: {errors}")
@@ -1236,7 +1237,6 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
             "references": content["references"]
         }
     
-    # Add references
     merged_content["references"] = content["references"]
     logger.info(f"Merged AI response: {merged_content}")
     return merged_content
@@ -1310,7 +1310,8 @@ def add_styled_table(doc, table_data, section_name):
 def create_reformatted_docx(sections, output_path, client_id=None, user_id=None):
     try:
         template_path = os.path.join(app.config['UPLOAD_FOLDER'], 'temp_template.docx')
-        doc = Document(template_path) if os.path.exists(template_path) else Document()
+        template_doc = Document(template_path) if os.path.exists(template_path) else Document()
+        doc = Document()
         
         def apply_template_style(paragraph, template_para):
             if template_para and template_para.runs:
@@ -1318,7 +1319,11 @@ def create_reformatted_docx(sections, output_path, client_id=None, user_id=None)
                     run.bold = template_para.runs[0].bold if template_para.runs else False
                     run.underline = template_para.runs[0].underline if template_para.runs else False
                     run.font.name = template_para.runs[0].font.name if template_para.runs else "Arial"
-                    run.font.size = template_para.runs[0].font.size if template_para.runs else Pt(12)
+                    run.font.size = template_para.runs[0].font.size if template_para.runs else Pt(11)
+                    run.font.color.rgb = template_para.runs[0].font.color.rgb if template_para.runs[0].font.color else None
+            paragraph.paragraph_format.alignment = template_para.paragraph_format.alignment if template_para.paragraph_format else None
+            paragraph.paragraph_format.space_before = template_para.paragraph_format.space_before if template_para.paragraph_format else Pt(6)
+            paragraph.paragraph_format.space_after = template_para.paragraph_format.space_after if template_para.paragraph_format else Pt(6)
             paragraph.style = template_para.style if template_para and template_para.style else "Normal"
         
         def format_content(content, indent=0):
@@ -1346,18 +1351,14 @@ def create_reformatted_docx(sections, output_path, client_id=None, user_id=None)
                 return "\n".join(formatted)
             return ""
 
-        # Load template for styling
-        template_doc = Document(template_path) if os.path.exists(template_path) else None
         template_paras = template_doc.paragraphs if template_doc else []
         
-        # Handle errors
         if "error" in sections:
             para = doc.add_paragraph(f"Error: {sections['error']}")
             apply_template_style(para, template_paras[0] if template_paras else None)
             doc.save(output_path)
             return
         
-        # Map JSON keys to template headers
         key_mapping = {
             "name": "Name",
             "contact": "Contact",
@@ -1378,7 +1379,6 @@ def create_reformatted_docx(sections, output_path, client_id=None, user_id=None)
             "projects & awards": "Projects and Awards"
         }
         
-        # Add sections dynamically
         processed_keys = set()
         for key, value in sections.items():
             normalized_key = key.lower()
@@ -1389,26 +1389,27 @@ def create_reformatted_docx(sections, output_path, client_id=None, user_id=None)
             display_key = key_mapping.get(normalized_key, key.capitalize())
             if display_key == "Name":
                 para = doc.add_paragraph(format_content(value))
-                apply_template_style(para, template_paras[0] if template_paras else None)
+                apply_template_style(para, next((p for p in template_paras if p.text.strip() and not p.text.startswith(("Professional", "Core", "Experience", "Education"))), template_paras[0] if template_paras else None))
             elif display_key == "Contact":
                 para = doc.add_paragraph(format_content(value).replace("\n", " | "))
-                apply_template_style(para, template_paras[1] if len(template_paras) > 1 else template_paras[0] if template_paras else None)
+                apply_template_style(para, next((p for p in template_paras if "|" in p.text), template_paras[1] if len(template_paras) > 1 else template_paras[0] if template_paras else None))
             elif display_key == "References" and value:
                 para = doc.add_paragraph("References")
                 apply_template_style(para, next((p for p in template_paras if "references" in p.text.lower()), template_paras[0] if template_paras else None))
                 for ref in value:
-                    para = doc.add_paragraph(ref, style="ListBullet")
+                    para = doc.add_paragraph(ref, style="List Bullet")
                     apply_template_style(para, next((p for p in template_paras if p.style and "bullet" in p.style.name.lower()), template_paras[0] if template_paras else None))
             else:
                 para = doc.add_paragraph(display_key)
                 apply_template_style(para, next((p for p in template_paras if display_key.lower() in p.text.lower()), template_paras[0] if template_paras else None))
+                para.runs[0].bold = True
                 
                 formatted_content = format_content(value)
                 if formatted_content:
                     lines = formatted_content.split("\n")
                     for line in lines:
                         if line.strip():
-                            para = doc.add_paragraph(line, style="ListBullet" if line.startswith("•") else None)
+                            para = doc.add_paragraph(line, style="List Bullet" if line.startswith("•") else None)
                             apply_template_style(para, next((p for p in template_paras if p.style and "bullet" in p.style.name.lower()), template_paras[0] if template_paras else None))
         
         doc.save(output_path)
