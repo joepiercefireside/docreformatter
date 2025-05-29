@@ -749,14 +749,22 @@ def index():
     prompt_name = None
     prompt_content = None
 
+    # Populate global templates and prompts on initial load
+    templates = get_templates_for_client('', current_user.id)
+    prompts = get_prompts_for_client('', current_user.id)
+
     if request.method == 'POST':
-        selected_client = request.form.get('client')
+        selected_client = request.form.get('client', '')
         selected_template = request.form.get('template')
         prompt_name = request.form.get('prompt_name')
-        source_file = request.files['source_file']
+        source_file = request.files.get('source_file')
         ai_prompt = request.form.get('ai_prompt')
 
-        if selected_client and source_file and source_file.filename.endswith('.docx'):
+        if selected_client or selected_client == '':
+            templates = get_templates_for_client(selected_client, current_user.id)
+            prompts = get_prompts_for_client(selected_client, current_user.id)
+
+        if source_file and source_file.filename.endswith('.docx'):
             template_name = selected_template if selected_template else None
             if template_name and not ai_prompt:
                 conn = get_db_connection()
@@ -764,7 +772,7 @@ def index():
                 cur.execute(
                     "SELECT prompt->'prompt' AS prompt_content "
                     "FROM settings "
-                    "WHERE user_id = %s AND client_id = %s AND template_name = %s AND prompt IS NOT NULL LIMIT 1",
+                    "WHERE user_id = %s AND (client_id = %s OR client_id = '') AND template_name = %s AND prompt IS NOT NULL LIMIT 1",
                     (current_user.id, selected_client or '', template_name)
                 )
                 result = cur.fetchone()
@@ -789,27 +797,21 @@ def index():
                 logger.error(f"Error processing document: {str(e)}")
                 flash(f"Error processing document: {str(e)}", 'error')
 
-    # Fetch templates and prompts for the selected client
-    if request.form.get('client'):
-        selected_client = request.form.get('client')
-        templates = get_templates_for_client(selected_client, current_user.id)
-        prompts = get_prompts_for_client(selected_client, current_user.id)
-    if request.form.get('template'):
-        selected_template = request.form.get('template')
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT prompt->'prompt' AS prompt_content, prompt_name "
-            "FROM settings "
-            "WHERE user_id = %s AND client_id = %s AND template_name = %s LIMIT 1",
-            (current_user.id, selected_client or '', selected_template)
-        )
-        result = cur.fetchone()
-        cur.close()
-        conn.close()
-        if result:
-            prompt_name = result[1] or 'Custom'
-            prompt_content = result[0] or ''
+        if selected_template:
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT prompt->'prompt' AS prompt_content, prompt_name "
+                "FROM settings "
+                "WHERE user_id = %s AND (client_id = %s OR client_id = '') AND template_name = %s LIMIT 1",
+                (current_user.id, selected_client or '', selected_template)
+            )
+            result = cur.fetchone()
+            cur.close()
+            conn.close()
+            if result:
+                prompt_name = result[1] or 'Custom'
+                prompt_content = result[0] or ''
 
     return render_template('index.html', clients=clients, templates=templates, prompts=prompts,
                          selected_client=selected_client, selected_template=selected_template,
