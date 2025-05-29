@@ -1,7 +1,7 @@
 from flask import Flask, request, send_file, render_template, jsonify, redirect, url_for, flash, session
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from docx import Document
-from docx.shared import Pt
+from docx.shared import Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 import requests
 import json
@@ -534,7 +534,7 @@ def create_template():
                 return redirect(url_for('create_template', client_id=client_id))
             except Exception as e:
                 logger.error(f"Error updating template: {str(e)}")
-                flash(f'Failed to update template: {str(e)}', 'danger')
+                flash(f'Failed to create template: {str(e)}', 'danger')
                 return redirect(url_for('create_template', client_id=client_id))
     
     if selected_client:
@@ -1048,7 +1048,7 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
                     if not isinstance(parsed_content, dict):
                         raise ValueError("AI response is not a JSON object")
                     normalized_content = {k.lower(): v for k, v in parsed_content.items()}
-                    return normalized_content
+                    return {"index": chunk_index, "content": normalized_content}
                 except json.JSONDecodeError as e:
                     logger.error(f"JSON validation error (chunk {chunk_index}): {str(e)}, raw: {raw_content[:1000]}")
                     try:
@@ -1061,7 +1061,7 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
                         if not isinstance(parsed_content, dict):
                             raise ValueError("Cleaned AI response is not a JSON object")
                         normalized_content = {k.lower(): v for k, v in parsed_content.items()}
-                        return normalized_content
+                        return {"index": chunk_index, "content": normalized_content}
                     except json.JSONDecodeError as e2:
                         logger.error(f"Failed to fix JSON (chunk {chunk_index}): {str(e2)}")
                         return {"error": f"Invalid JSON in chunk {chunk_index}: {str(e)}"}
@@ -1082,6 +1082,9 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
         for future in concurrent.futures.as_completed(futures):
             results.append(future.result())
     
+    # Sort results by chunk index to preserve source order
+    results.sort(key=lambda x: x.get("index", float('inf')))
+    
     merged_content = {}
     errors = []
     processed_items = set()
@@ -1089,17 +1092,17 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
         if "error" in result:
             errors.append(result["error"])
         else:
-            for key, value in result.items():
+            for key, value in result["content"].items():
                 if key in merged_content:
                     if isinstance(value, str) and isinstance(merged_content[key], str):
                         if value not in processed_items:
-                            merged_content[key] += "\n" + value
+                            merged_content[key] = value + "\n" + merged_content[key]  # Prepend to maintain order
                             processed_items.add(value)
                     elif isinstance(value, dict) and isinstance(merged_content[key], dict):
                         for subkey, subvalue in value.items():
                             if isinstance(subvalue, str) and isinstance(merged_content[key].get(subkey, ""), str):
                                 if subvalue not in processed_items:
-                                    merged_content[key][subkey] = (merged_content[key].get(subkey, "") + "\n" + subvalue).strip()
+                                    merged_content[key][subkey] = subvalue + "\n" + merged_content[key].get(subkey, "")
                                     processed_items.add(subvalue)
                             elif isinstance(subvalue, list) and isinstance(merged_content[key].get(subkey, []), list):
                                 new_items = []
@@ -1112,7 +1115,7 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
                                     elif item not in processed_items:
                                         new_items.append(item)
                                         processed_items.add(item)
-                                merged_content[key][subkey] = merged_content[key].get(subkey, []) + new_items
+                                merged_content[key][subkey] = new_items + merged_content[key].get(subkey, [])
                             else:
                                 merged_content[key][subkey] = subvalue
                                 if isinstance(subvalue, str):
@@ -1128,7 +1131,7 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
                             elif item not in processed_items:
                                 new_items.append(item)
                                 processed_items.add(item)
-                        merged_content[key].extend(new_items)
+                        merged_content[key] = new_items + merged_content[key]
                     else:
                         merged_content[key] = value
                         if isinstance(value, str):
@@ -1157,40 +1160,89 @@ def create_reformatted_docx(sections, output_path, client_id=None, user_id=None)
         template_doc = Document(template_path) if os.path.exists(template_path) else Document()
         doc = Document()
         
-        def apply_template_style(paragraph, template_para=None):
-            if template_para and template_para.runs:
-                for run in paragraph.runs:
-                    run.bold = template_para.runs[0].bold if template_para.runs else False
-                    run.underline = template_para.runs[0].underline if template_para.runs else False
-                    run.font.name = template_para.runs[0].font.name if template_para.runs else "Arial"
-                    run.font.size = template_para.runs[0].font.size if template_para.runs else Pt(11)
-                    run.font.color.rgb = template_para.runs[0].font.color.rgb if template_para.runs[0].font.color else None
-            # Use default formatting if template_para is None
+        def apply_template_style(paragraph, section_type, template_doc):
+            template_paras = template_doc.paragraphs if template_doc.paragraphs else []
+            template_para = None
+            if section_type == "name":
+                template_para = next((p for p in template_paras if p.text.strip() and not p.text.startswith(("Professional", "Core", "Experience", "Education"))), None)
+                if template_para and template_para.runs:
+                    for run in paragraph.runs:
+                        run.bold = True
+                        run.font.name = template_para.runs[0].font.name if template_para.runs[0].font.name else "Arial"
+                        run.font.size = Pt(14)
+                        run.font.color.rgb = RGBColor(0, 0, 0)
+                else:
+                    for run in paragraph.runs:
+                        run.bold = True
+                        run.font.name = "Arial"
+                        run.font.size = Pt(14)
+                        run.font.color.rgb = RGBColor(0, 0, 0)
+                paragraph.paragraph_format.space_after = Pt(12)
+            elif section_type == "header":
+                template_para = next((p for p in template_paras if p.text.strip() in ["Professional Summary", "Core Competencies", "Professional Experience", "Education"]), None)
+                if template_para and template_para.runs:
+                    for run in paragraph.runs:
+                        run.bold = True
+                        run.font.name = template_para.runs[0].font.name if template_para.runs[0].font.name else "Arial"
+                        run.font.size = Pt(12)
+                        run.font.color.rgb = RGBColor(0, 0, 0)
+                else:
+                    for run in paragraph.runs:
+                        run.bold = True
+                        run.font.name = "Arial"
+                        run.font.size = Pt(12)
+                        run.font.color.rgb = RGBColor(0, 0, 0)
+                paragraph.paragraph_format.space_after = Pt(6)
+            else:
+                template_para = next((p for p in template_paras if p.text.strip()), None)
+                if template_para and template_para.runs:
+                    for run in paragraph.runs:
+                        run.bold = template_para.runs[0].bold if template_para.runs else False
+                        run.font.name = template_para.runs[0].font.name if template_para.runs[0].font.name else "Arial"
+                        run.font.size = Pt(11)
+                        run.font.color.rgb = RGBColor(0, 0, 0)
+                else:
+                    for run in paragraph.runs:
+                        run.bold = False
+                        run.font.name = "Arial"
+                        run.font.size = Pt(11)
+                        run.font.color.rgb = RGBColor(0, 0, 0)
+                paragraph.paragraph_format.space_before = Pt(6)
+                paragraph.paragraph_format.space_after = Pt(6)
             paragraph.paragraph_format.alignment = template_para.paragraph_format.alignment if template_para and template_para.paragraph_format else None
-            paragraph.paragraph_format.space_before = template_para.paragraph_format.space_before if template_para and template_para.paragraph_format else Pt(6)
-            paragraph.paragraph_format.space_after = template_para.paragraph_format.space_after if template_para and template_para.paragraph_format else Pt(6)
             paragraph.style = template_para.style if template_para and template_para.style else "Normal"
         
-        def format_content(content, indent=0):
+        def is_horizontal_list(template_doc, section_name):
+            template_paras = template_doc.paragraphs if template_doc.paragraphs else []
+            for para in template_paras:
+                if section_name.lower() in para.text.lower() and "•" in para.text:
+                    return True
+            return False
+        
+        def format_content(content, indent=0, section_name=None, template_doc=None):
             if isinstance(content, str):
                 return content.strip()
+            elif isinstance(content, list) and section_name == "Core Competencies" and is_horizontal_list(template_doc, "Core Competencies"):
+                return " • ".join(item.strip() for item in content if isinstance(item, str))
             elif isinstance(content, list):
                 formatted = []
                 for item in content:
                     if isinstance(item, str):
                         formatted.append("• " + item.strip())
                     elif isinstance(item, dict):
+                        sub_formatted = []
                         for subkey, subvalue in item.items():
-                            subcontent = format_content(subvalue, indent + 1)
+                            subcontent = format_content(subvalue, indent + 1, section_name, template_doc)
                             if subcontent:
-                                formatted.append(f"{'  ' * indent}{subkey}: {subcontent}")
+                                sub_formatted.append(f"{subkey}: {subcontent}")
+                        formatted.append("\n".join(sub_formatted))
                     elif isinstance(item, list):
-                        formatted.extend(format_content(item, indent + 1))
+                        formatted.extend(format_content(item, indent + 1, section_name, template_doc))
                 return "\n".join(formatted)
             elif isinstance(content, dict):
                 formatted = []
                 for subkey, subvalue in content.items():
-                    subcontent = format_content(subvalue, indent + 1)
+                    subcontent = format_content(subvalue, indent + 1, section_name, template_doc)
                     if subcontent:
                         formatted.append(f"{'  ' * indent}{subkey}: {subcontent}")
                 return "\n".join(formatted)
@@ -1201,7 +1253,7 @@ def create_reformatted_docx(sections, output_path, client_id=None, user_id=None)
 
         if "error" in sections:
             para = doc.add_paragraph(f"Error: {sections['error']}")
-            apply_template_style(para)
+            apply_template_style(para, "body", template_doc)
             doc.save(output_path)
             return
         
@@ -1219,50 +1271,57 @@ def create_reformatted_docx(sections, output_path, client_id=None, user_id=None)
             "experience": "Professional Experience",
             "education": "Education",
             "affiliations": "Affiliations",
-            "professional_affiliations": "Affiliations",
+            "professional_affiliations": "Professional Affiliations",
             "certifications": "Certifications",
             "projects_awards": "Projects and Awards",
             "projects & awards": "Projects and Awards"
         }
         
         processed_keys = set()
-        default_para = template_paras[0] if template_paras else None
-        for key, value in sections.items():
+        for key in ["name", "contact", "professional summary", "core competencies", "professional experience", "education", "professional affiliations", "affiliations", "references"]:
             normalized_key = key.lower()
-            if normalized_key in processed_keys:
+            if normalized_key not in sections or normalized_key in processed_keys:
                 continue
             processed_keys.add(normalized_key)
             
             display_key = key_mapping.get(normalized_key, key.capitalize())
+            value = sections[normalized_key]
+            
+            if not value or (isinstance(value, str) and not value.strip()) or (isinstance(value, list) and not value):
+                continue
+            
             if display_key == "Name":
-                para = doc.add_paragraph(format_content(value))
-                apply_template_style(para, default_para)
-                para.runs[0].bold = True
-                para.paragraph_format.space_after = Pt(12)
+                para = doc.add_paragraph(format_content(value, section_name=display_key, template_doc=template_doc))
+                apply_template_style(para, "name", template_doc)
             elif display_key == "Contact":
-                para = doc.add_paragraph(format_content(value).replace("\n", " | "))
-                apply_template_style(para, default_para)
-                para.paragraph_format.space_after = Pt(12)
-            elif display_key == "References" and value:
-                para = doc.add_paragraph("References")
-                apply_template_style(para, default_para)
-                para.runs[0].bold = True
-                for ref in value:
-                    para = doc.add_paragraph(ref, style="List Bullet")
-                    apply_template_style(para, default_para)
-            else:
+                para = doc.add_paragraph(format_content(value, section_name=display_key, template_doc=template_doc).replace("\n", " | "))
+                apply_template_style(para, "body", template_doc)
+            elif display_key in ["Professional Summary", "Core Competencies", "Professional Experience", "Education", "Professional Affiliations"]:
                 para = doc.add_paragraph(display_key)
-                apply_template_style(para, default_para)
-                para.runs[0].bold = True
-                para.paragraph_format.space_after = Pt(6)
-                
-                formatted_content = format_content(value)
+                apply_template_style(para, "header", template_doc)
+                formatted_content = format_content(value, section_name=display_key, template_doc=template_doc)
                 if formatted_content:
                     lines = formatted_content.split("\n")
                     for line in lines:
                         if line.strip():
                             para = doc.add_paragraph(line, style="List Bullet" if line.startswith("•") else None)
-                            apply_template_style(para, default_para)
+                            apply_template_style(para, "body", template_doc)
+            elif display_key == "References" and value:
+                para = doc.add_paragraph("References")
+                apply_template_style(para, "header", template_doc)
+                for ref in value:
+                    para = doc.add_paragraph(ref, style="List Bullet")
+                    apply_template_style(para, "body", template_doc)
+            else:
+                para = doc.add_paragraph(display_key)
+                apply_template_style(para, "header", template_doc)
+                formatted_content = format_content(value, section_name=display_key, template_doc=template_doc)
+                if formatted_content:
+                    lines = formatted_content.split("\n")
+                    for line in lines:
+                        if line.strip():
+                            para = doc.add_paragraph(line, style="List Bullet" if line.startswith("•") else None)
+                            apply_template_style(para, "body", template_doc)
         
         doc.save(output_path)
         logger.info(f"Successfully created reformatted document: {output_path}")
