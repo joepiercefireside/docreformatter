@@ -1194,7 +1194,7 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
     
     merged_content = {}
     errors = []
-    processed_items = set()  # Track unique items to avoid duplicates
+    processed_items = set()  # Track unique items
     for result in results:
         if "error" in result:
             errors.append(result["error"])
@@ -1212,21 +1212,42 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
                                     merged_content[key][subkey] = (merged_content[key].get(subkey, "") + "\n" + subvalue).strip()
                                     processed_items.add(subvalue)
                             elif isinstance(subvalue, list) and isinstance(merged_content[key].get(subkey, []), list):
-                                merged_content[key][subkey] = list(set(merged_content[key].get(subkey, []) + subvalue))
-                                processed_items.update(tuple(subvalue) if isinstance(subvalue, list) else [subvalue])
+                                # Convert dictionaries to strings for comparison
+                                new_items = []
+                                for item in subvalue:
+                                    if isinstance(item, dict):
+                                        item_str = json.dumps(item, sort_keys=True)
+                                        if item_str not in processed_items:
+                                            new_items.append(item)
+                                            processed_items.add(item_str)
+                                    elif item not in processed_items:
+                                        new_items.append(item)
+                                        processed_items.add(item)
+                                merged_content[key][subkey] = merged_content[key].get(subkey, []) + new_items
                             else:
                                 merged_content[key][subkey] = subvalue
-                                processed_items.add(str(subvalue))
+                                if isinstance(subvalue, str):
+                                    processed_items.add(subvalue)
                     elif isinstance(value, list) and isinstance(merged_content[key], list):
-                        new_items = [x for x in value if x not in processed_items]
+                        new_items = []
+                        for item in value:
+                            if isinstance(item, dict):
+                                item_str = json.dumps(item, sort_keys=True)
+                                if item_str not in processed_items:
+                                    new_items.append(item)
+                                    processed_items.add(item_str)
+                            elif item not in processed_items:
+                                new_items.append(item)
+                                processed_items.add(item)
                         merged_content[key].extend(new_items)
-                        processed_items.update(new_items)
                     else:
                         merged_content[key] = value
-                        processed_items.add(str(value))
+                        if isinstance(value, str):
+                            processed_items.add(value)
                 else:
                     merged_content[key] = value
-                    processed_items.add(str(value))
+                    if isinstance(value, str):
+                        processed_items.add(value)
     
     if errors:
         logger.error(f"Errors in processing: {errors}")
@@ -1390,12 +1411,16 @@ def create_reformatted_docx(sections, output_path, client_id=None, user_id=None)
             if display_key == "Name":
                 para = doc.add_paragraph(format_content(value))
                 apply_template_style(para, next((p for p in template_paras if p.text.strip() and not p.text.startswith(("Professional", "Core", "Experience", "Education"))), template_paras[0] if template_paras else None))
+                para.runs[0].bold = True
+                para.paragraph_format.space_after = Pt(12)
             elif display_key == "Contact":
                 para = doc.add_paragraph(format_content(value).replace("\n", " | "))
                 apply_template_style(para, next((p for p in template_paras if "|" in p.text), template_paras[1] if len(template_paras) > 1 else template_paras[0] if template_paras else None))
+                para.paragraph_format.space_after = Pt(12)
             elif display_key == "References" and value:
                 para = doc.add_paragraph("References")
                 apply_template_style(para, next((p for p in template_paras if "references" in p.text.lower()), template_paras[0] if template_paras else None))
+                para.runs[0].bold = True
                 for ref in value:
                     para = doc.add_paragraph(ref, style="List Bullet")
                     apply_template_style(para, next((p for p in template_paras if p.style and "bullet" in p.style.name.lower()), template_paras[0] if template_paras else None))
@@ -1403,6 +1428,7 @@ def create_reformatted_docx(sections, output_path, client_id=None, user_id=None)
                 para = doc.add_paragraph(display_key)
                 apply_template_style(para, next((p for p in template_paras if display_key.lower() in p.text.lower()), template_paras[0] if template_paras else None))
                 para.runs[0].bold = True
+                para.paragraph_format.space_after = Pt(6)
                 
                 formatted_content = format_content(value)
                 if formatted_content:
