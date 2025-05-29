@@ -993,7 +993,9 @@ def fetch_template(output_path, client_id=None, user_id=None, template_name=None
         if result and result[0]:
             with open(output_path, 'wb') as f:
                 f.write(result[0])
+            logger.info(f"Successfully fetched template: {output_path}")
             return True
+        logger.warning("No template found in database")
         return False
     except Exception as e:
         logger.error(f"Error fetching template: {str(e)}")
@@ -1155,7 +1157,7 @@ def create_reformatted_docx(sections, output_path, client_id=None, user_id=None)
         template_doc = Document(template_path) if os.path.exists(template_path) else Document()
         doc = Document()
         
-        def apply_template_style(paragraph, template_para):
+        def apply_template_style(paragraph, template_para=None):
             if template_para and template_para.runs:
                 for run in paragraph.runs:
                     run.bold = template_para.runs[0].bold if template_para.runs else False
@@ -1163,9 +1165,10 @@ def create_reformatted_docx(sections, output_path, client_id=None, user_id=None)
                     run.font.name = template_para.runs[0].font.name if template_para.runs else "Arial"
                     run.font.size = template_para.runs[0].font.size if template_para.runs else Pt(11)
                     run.font.color.rgb = template_para.runs[0].font.color.rgb if template_para.runs[0].font.color else None
-            paragraph.paragraph_format.alignment = template_para.paragraph_format.alignment if template_para.paragraph_format else None
-            paragraph.paragraph_format.space_before = template_para.paragraph_format.space_before if template_para.paragraph_format else Pt(6)
-            paragraph.paragraph_format.space_after = template_para.paragraph_format.space_after if template_para.paragraph_format else Pt(6)
+            # Use default formatting if template_para is None
+            paragraph.paragraph_format.alignment = template_para.paragraph_format.alignment if template_para and template_para.paragraph_format else None
+            paragraph.paragraph_format.space_before = template_para.paragraph_format.space_before if template_para and template_para.paragraph_format else Pt(6)
+            paragraph.paragraph_format.space_after = template_para.paragraph_format.space_after if template_para and template_para.paragraph_format else Pt(6)
             paragraph.style = template_para.style if template_para and template_para.style else "Normal"
         
         def format_content(content, indent=0):
@@ -1193,11 +1196,12 @@ def create_reformatted_docx(sections, output_path, client_id=None, user_id=None)
                 return "\n".join(formatted)
             return ""
 
-        template_paras = template_doc.paragraphs if template_doc else []
-        
+        template_paras = template_doc.paragraphs if template_doc.paragraphs else []
+        logger.info(f"Template paragraphs count: {len(template_paras)}")
+
         if "error" in sections:
             para = doc.add_paragraph(f"Error: {sections['error']}")
-            apply_template_style(para, template_paras[0] if template_paras else None)
+            apply_template_style(para)
             doc.save(output_path)
             return
         
@@ -1222,6 +1226,7 @@ def create_reformatted_docx(sections, output_path, client_id=None, user_id=None)
         }
         
         processed_keys = set()
+        default_para = template_paras[0] if template_paras else None
         for key, value in sections.items():
             normalized_key = key.lower()
             if normalized_key in processed_keys:
@@ -1231,23 +1236,23 @@ def create_reformatted_docx(sections, output_path, client_id=None, user_id=None)
             display_key = key_mapping.get(normalized_key, key.capitalize())
             if display_key == "Name":
                 para = doc.add_paragraph(format_content(value))
-                apply_template_style(para, next((p for p in template_paras if p.text.strip() and not p.text.startswith(("Professional", "Core", "Experience", "Education"))), template_paras[0] if template_paras else None))
+                apply_template_style(para, default_para)
                 para.runs[0].bold = True
                 para.paragraph_format.space_after = Pt(12)
             elif display_key == "Contact":
                 para = doc.add_paragraph(format_content(value).replace("\n", " | "))
-                apply_template_style(para, next((p for p in template_paras if "|" in p.text), template_paras[1] if len(template_paras) > 1 else template_paras[0] if template_paras else None))
+                apply_template_style(para, default_para)
                 para.paragraph_format.space_after = Pt(12)
             elif display_key == "References" and value:
                 para = doc.add_paragraph("References")
-                apply_template_style(para, next((p for p in template_paras if "references" in p.text.lower()), template_paras[0] if template_paras else None))
+                apply_template_style(para, default_para)
                 para.runs[0].bold = True
                 for ref in value:
                     para = doc.add_paragraph(ref, style="List Bullet")
-                    apply_template_style(para, next((p for p in template_paras if p.style and "bullet" in p.style.name.lower()), template_paras[0] if template_paras else None))
+                    apply_template_style(para, default_para)
             else:
                 para = doc.add_paragraph(display_key)
-                apply_template_style(para, next((p for p in template_paras if display_key.lower() in p.text.lower()), template_paras[0] if template_paras else None))
+                apply_template_style(para, default_para)
                 para.runs[0].bold = True
                 para.paragraph_format.space_after = Pt(6)
                 
@@ -1257,9 +1262,10 @@ def create_reformatted_docx(sections, output_path, client_id=None, user_id=None)
                     for line in lines:
                         if line.strip():
                             para = doc.add_paragraph(line, style="List Bullet" if line.startswith("•") else None)
-                            apply_template_style(para, next((p for p in template_paras if p.style and "bullet" in p.style.name.lower()), template_paras[0] if template_paras else None))
+                            apply_template_style(para, default_para)
         
         doc.save(output_path)
+        logger.info(f"Successfully created reformatted document: {output_path}")
     except Exception as e:
         logger.error(f"Error creating reformatted docx: {str(e)}")
         raise
