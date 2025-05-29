@@ -3,9 +3,6 @@ from flask_login import LoginManager, UserMixin, login_user, logout_user, login_
 from docx import Document
 from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.enum.table import WD_TABLE_ALIGNMENT, WD_CELL_VERTICAL_ALIGNMENT
-from docx.oxml import OxmlElement
-from docx.oxml.ns import qn
 import requests
 import json
 import os
@@ -17,6 +14,8 @@ from authlib.integrations.flask_client import OAuth
 import secrets
 import logging
 import concurrent.futures
+from sqlalchemy.sql import text
+from tempfile import TemporaryDirectory
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = '/tmp'
@@ -760,26 +759,19 @@ def index():
         if selected_client and source_file and source_file.filename.endswith('.docx'):
             template_name = selected_template if selected_template else None
             if template_name and not ai_prompt:
-                query = text("""
-                    SELECT prompt->'prompt' AS prompt_content
-                    FROM settings
-                    WHERE user_id = :user_id
-                      AND prompt_name = (
-                          SELECT prompt_name
-                          FROM settings
-                          WHERE user_id = :user_id
-                            AND template_name = :template_name
-                            AND template IS NOT NULL
-                          LIMIT 1
-                      )
-                    LIMIT 1
-                """)
-                result = db.session.execute(query, {
-                    'user_id': current_user.id,
-                    'template_name': template_name
-                }).fetchone()
+                conn = get_db_connection()
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT prompt->'prompt' AS prompt_content "
+                    "FROM settings "
+                    "WHERE user_id = %s AND client_id = %s AND template_name = %s AND prompt IS NOT NULL LIMIT 1",
+                    (current_user.id, selected_client or '', template_name)
+                )
+                result = cur.fetchone()
+                cur.close()
+                conn.close()
                 if result:
-                    ai_prompt = result.prompt_content
+                    ai_prompt = result[0]
                 else:
                     flash('No prompt found for the selected template.', 'error')
                     return redirect(url_for('index'))
@@ -797,28 +789,27 @@ def index():
                 logger.error(f"Error processing document: {str(e)}")
                 flash(f"Error processing document: {str(e)}", 'error')
 
+    # Fetch templates and prompts for the selected client
     if request.form.get('client'):
         selected_client = request.form.get('client')
         templates = get_templates_for_client(selected_client, current_user.id)
         prompts = get_prompts_for_client(selected_client, current_user.id)
     if request.form.get('template'):
         selected_template = request.form.get('template')
-        query = text("""
-            SELECT s2.prompt->'prompt' AS prompt_content, s2.prompt_name
-            FROM settings s1
-            JOIN settings s2 ON s1.prompt_name = s2.prompt_name
-            WHERE s1.user_id = :user_id
-              AND s1.template_name = :template_name
-              AND s2.user_id = :user_id
-            LIMIT 1
-        """)
-        result = db.session.execute(query, {
-            'user_id': current_user.id,
-            'template_name': selected_template
-        }).fetchone()
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT prompt->'prompt' AS prompt_content, prompt_name "
+            "FROM settings "
+            "WHERE user_id = %s AND client_id = %s AND template_name = %s LIMIT 1",
+            (current_user.id, selected_client or '', selected_template)
+        )
+        result = cur.fetchone()
+        cur.close()
+        conn.close()
         if result:
-            prompt_name = result.prompt_name
-            prompt_content = result.prompt_content
+            prompt_name = result[1] or 'Custom'
+            prompt_content = result[0] or ''
 
     return render_template('index.html', clients=clients, templates=templates, prompts=prompts,
                          selected_client=selected_client, selected_template=selected_template,
@@ -827,6 +818,204 @@ def index():
 # API and document processing
 AI_API_URL = os.environ.get('AI_API_URL', 'https://api.openai.com/v1/chat/completions')
 API_KEY = os.environ.get('API_KEY', 'your-api-key')
+
+DEFAULT_AI_PROMPT = """You are a medical document analyst. Analyze the provided document content and categorize it into the following sections based on the input text and tables:
+- Summary: A concise overview of the drug, its purpose, and key findings.
+- Background: Context about the disease or condition the drug treats.
+- Monograph: Official prescribing information, usage guidelines, or clinical details.
+- Real-World Experiences: Patient or clinician experiences, if present (else empty).
+- Enclosures: Descriptions of supporting documents, posters, or additional materials.
+- Tables: Assign tables to appropriate sections (e.g., 'Patient Demographics', 'Adverse Events') based on their content.
+Return a JSON object with these keys and the corresponding content extracted or rewritten from the input. Preserve references separately. Ensure the response is valid JSON. For tables, return a dictionary where keys are descriptive section names and values are lists of rows, each row being a list of cell values. Focus on accurately interpreting and summarizing the source material, avoiding any formatting instructions."""
+
+def load_prompt(client_id=None, user_id=None, prompt_name=None):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        if client_id is not None and user_id and prompt_name:
+            cur.execute(
+                "SELECT prompt->'prompt' AS prompt_content FROM settings WHERE client_id = %s AND user_id = %s AND prompt_name = %s AND prompt IS NOT NULL AND template_name IS NULL ORDER BY created_at DESC LIMIT 1",
+                (client_id, user_id, prompt_name)
+            )
+        elif client_id is not None and user_id:
+            cur.execute(
+                "SELECT prompt->'prompt' AS prompt_content FROM settings WHERE client_id = %s AND user_id = %s AND prompt IS NOT NULL AND template_name IS NULL ORDER BY created_at DESC LIMIT 1",
+                (client_id, user_id)
+            )
+        else:
+            cur.execute(
+                "SELECT prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND client_id = '' AND prompt IS NOT NULL AND template_name IS NULL ORDER BY created_at DESC LIMIT 1",
+                (user_id,)
+            )
+        result = cur.fetchone()
+        cur.close()
+        conn.close()
+        return result[0] if result and result[0] else DEFAULT_AI_PROMPT
+    except Exception as e:
+        logger.error(f"Error loading prompt: {str(e)}")
+        return DEFAULT_AI_PROMPT
+
+def save_prompt(prompt, client_id, user_id, prompt_name):
+    try:
+        if not prompt_name:
+            raise ValueError(f"Prompt name cannot be empty: prompt_name={prompt_name}")
+        if not prompt:
+            raise ValueError(f"Prompt content cannot be empty")
+        sanitized_prompt = prompt.encode('utf-8', errors='replace').decode('utf-8')
+        client_id = client_id or ''
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO settings (user_id, client_id, prompt, prompt_name) VALUES (%s, %s, %s, %s) "
+            "ON CONFLICT ON CONSTRAINT settings_unique_user_client_prompt_template DO UPDATE SET prompt = EXCLUDED.prompt",
+            (user_id, client_id, Json({'prompt': sanitized_prompt}), prompt_name)
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        logger.info(f"Saved prompt '{prompt_name}' for client {client_id or 'global'}, user {user_id}: {sanitized_prompt[:100]}...")
+    except Exception as e:
+        logger.error(f"Error saving prompt: {str(e)}")
+        raise
+
+def get_user_clients(user_id):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT DISTINCT client_id FROM settings WHERE user_id = %s AND client_id IS NOT NULL AND client_id != ''",
+            (user_id,)
+        )
+        clients = [row[0] for row in cur.fetchall()]
+        cur.close()
+        conn.close()
+        logger.info(f"Fetched clients for user {user_id}: {clients}")
+        return clients
+    except Exception as e:
+        logger.error(f"Error getting clients: {str(e)}")
+        return []
+
+def get_templates_for_client(client_id, user_id):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        if client_id:
+            cur.execute(
+                "SELECT template_name, prompt_name FROM settings WHERE user_id = %s AND (client_id = %s OR client_id = '') AND template IS NOT NULL",
+                (user_id, client_id)
+            )
+        else:
+            cur.execute(
+                "SELECT template_name, prompt_name FROM settings WHERE user_id = %s AND client_id = '' AND template IS NOT NULL",
+                (user_id,)
+            )
+        templates = [{'template_name': row[0], 'prompt_name': row[1]} for row in cur.fetchall()]
+        cur.close()
+        conn.close()
+        logger.info(f"Fetched templates for client {client_id or 'global'}, user {user_id}: {templates}")
+        return templates
+    except Exception as e:
+        logger.error(f"Error getting templates for client: {str(e)}")
+        return []
+
+def get_prompts_for_client(client_id, user_id):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        if client_id:
+            cur.execute(
+                "SELECT prompt_name, prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND (client_id = %s OR client_id = '') AND prompt IS NOT NULL AND template_name IS NULL",
+                (user_id, client_id)
+            )
+        else:
+            cur.execute(
+                "SELECT prompt_name, prompt->'prompt' AS prompt_content FROM settings WHERE user_id = %s AND client_id = '' AND prompt IS NOT NULL AND template_name IS NULL",
+                (user_id,)
+            )
+        prompts = [{'prompt_name': row[0], 'prompt_content': row[1] or ''} for row in cur.fetchall()]
+        cur.close()
+        conn.close()
+        logger.info(f"Fetched prompts for client {client_id or 'global'}, user {user_id}: {prompts}")
+        return prompts
+    except Exception as e:
+        logger.error(f"Error getting prompts for client: {str(e)}")
+        return []
+
+def process_docx(file):
+    try:
+        filename = secure_filename(file.filename)
+        input_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        file.save(input_path)
+        doc = Document(input_path)
+        content = {"text_chunks": [], "tables": [], "references": []}
+        in_references = False
+        chunk = []
+        chunk_size = 1000  # Characters per chunk
+        current_chunk_length = 0
+
+        for para in doc.paragraphs:
+            text = para.text.strip()
+            if text:
+                if text.lower().startswith("references"):
+                    in_references = True
+                    continue
+                if in_references:
+                    content["references"].append(text)
+                else:
+                    chunk.append(text)
+                    current_chunk_length += len(text)
+                    if current_chunk_length >= chunk_size:
+                        content["text_chunks"].append("\n".join(chunk))
+                        chunk = []
+                        current_chunk_length = 0
+        if chunk:
+            content["text_chunks"].append("\n".join(chunk))
+
+        for table in doc.tables:
+            table_data = []
+            for row in table.rows:
+                row_data = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+                if row_data:
+                    table_data.append(row_data)
+            if table_data:
+                logger.info(f"Extracted table: {table_data}")
+                content["tables"].append(table_data)
+        os.remove(input_path)
+        return content
+    except Exception as e:
+        logger.error(f"Error processing docx: {str(e)}")
+        raise
+
+def fetch_template(output_path, client_id=None, user_id=None, template_name=None):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        if client_id is not None and user_id and template_name:
+            cur.execute(
+                "SELECT template FROM settings WHERE client_id = %s AND user_id = %s AND template_name = %s AND template IS NOT NULL ORDER BY created_at DESC LIMIT 1",
+                (client_id, user_id, template_name)
+            )
+        elif client_id is not None and user_id:
+            cur.execute(
+                "SELECT template FROM settings WHERE client_id = %s AND user_id = %s AND template IS NOT NULL ORDER BY created_at DESC LIMIT 1",
+                (client_id, user_id)
+            )
+        else:
+            cur.execute(
+                "SELECT template FROM settings WHERE user_id = %s AND client_id = '' AND template IS NOT NULL ORDER BY created_at DESC LIMIT 1",
+                (user_id,)
+            )
+        result = cur.fetchone()
+        cur.close()
+        conn.close()
+        if result and result[0]:
+            with open(output_path, 'wb') as f:
+                f.write(result[0])
+            return True
+        return False
+    except Exception as e:
+        logger.error(f"Error fetching template: {str(e)}")
+        return False
 
 def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_prompt=None):
     headers = {
