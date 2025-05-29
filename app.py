@@ -1149,11 +1149,11 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
         payload = {
             "model": "gpt-3.5-turbo-0125",
             "messages": messages,
-            "max_tokens": 4096,
+            "max_tokens": 2048,  # Reduced to optimize response time
             "temperature": 0.7
         }
         try:
-            response = requests.post(AI_API_URL, headers=headers, json=payload)
+            response = requests.post(AI_API_URL, headers=headers, json=payload, timeout=10)  # Added timeout
             response.raise_for_status()
             if not response.text:
                 logger.error(f"Empty response from API (chunk {chunk_index})")
@@ -1174,30 +1174,7 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
                     return normalized_content
                 except json.JSONDecodeError as e:
                     logger.error(f"JSON validation error (chunk {chunk_index}): {str(e)}, raw: {raw_content[:1000]}")
-                    try:
-                        # Parse markdown/plain text as fallback
-                        lines = raw_content.split("\n")
-                        parsed_content = {}
-                        current_key = None
-                        current_value = []
-                        for line in lines:
-                            line = line.strip()
-                            if line.startswith("**") and line.endswith("**"):
-                                if current_key:
-                                    parsed_content[current_key.lower()] = "\n".join(current_value).strip()
-                                    current_value = []
-                                current_key = line.strip("**").strip()
-                            elif line:
-                                current_value.append(line)
-                        if current_key and current_value:
-                            parsed_content[current_key.lower()] = "\n".join(current_value).strip()
-                        if parsed_content:
-                            logger.info(f"Parsed markdown content (chunk {chunk_index}): {parsed_content}")
-                            return parsed_content
-                        return {"error": f"Failed to parse non-JSON content in chunk {chunk_index}"}
-                    except Exception as parse_e:
-                        logger.error(f"Markdown parsing error (chunk {chunk_index}): {str(parse_e)}")
-                        return {"error": f"Invalid JSON in chunk {chunk_index}: {str(e)}"}
+                    return {"error": f"Invalid JSON in chunk {chunk_index}: {str(e)}"}
             except ValueError as e:
                 logger.error(f"Invalid JSON response (chunk {chunk_index}): {response.text[:1000]}")
                 return {"error": f"Invalid JSON response in chunk {chunk_index}: {response.text[:1000]}"}
@@ -1209,11 +1186,13 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
             logger.error(f"Unexpected Error (chunk {chunk_index}): {str(e)}")
             return {"error": str(e)}
 
-    # Process text chunks
+    # Process text chunks in parallel to reduce time
+    import concurrent.futures
     results = []
-    for i, chunk in enumerate(content["text_chunks"], 1):
-        result = process_chunk(chunk, content["tables"], i)
-        results.append(result)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+        futures = [executor.submit(process_chunk, chunk_text, content["tables"], i) for i, chunk_text in enumerate(content["text_chunks"], 1)]
+        for future in concurrent.futures.as_completed(futures):
+            results.append(future.result())
     
     # Merge results
     merged_content = {}
@@ -1226,18 +1205,17 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
                 if key in merged_content:
                     if isinstance(value, str) and isinstance(merged_content[key], str):
                         if value not in merged_content[key].split("\n"):
-                            merged_content[key] += "\n" + value if value else ""
+                            merged_content[key] += "\n" + value
                     elif isinstance(value, dict) and isinstance(merged_content[key], dict):
                         for subkey, subvalue in value.items():
                             if subkey in merged_content[key]:
                                 if isinstance(subvalue, str) and isinstance(merged_content[key][subkey], str):
                                     if subvalue not in merged_content[key][subkey].split("\n"):
-                                        merged_content[key][subkey] += "\n" + subvalue if subvalue else ""
+                                        merged_content[key][subkey] += "\n" + subvalue
                                 elif isinstance(subvalue, list) and isinstance(merged_content[key][subkey], list):
                                     merged_content[key][subkey].extend([x for x in subvalue if x not in merged_content[key][subkey]])
                                 elif isinstance(subvalue, dict) and isinstance(merged_content[key][subkey], dict):
-                                    for subsubkey, subsubvalue in subvalue.items():
-                                        merged_content[key][subkey][subsubkey] = subsubvalue
+                                    merged_content[key][subkey].update(subvalue)
                                 else:
                                     merged_content[key][subkey] = subvalue
                             else:
@@ -1245,7 +1223,6 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
                     elif isinstance(value, list) and isinstance(merged_content[key], list):
                         merged_content[key].extend([x for x in value if x not in merged_content[key]])
                     else:
-                        # Overwrite with newer value to avoid conflicts
                         merged_content[key] = value
                 else:
                     merged_content[key] = value
@@ -1342,7 +1319,7 @@ def create_reformatted_docx(sections, output_path, client_id=None, user_id=None)
                     run.underline = template_para.runs[0].underline if template_para.runs else False
                     run.font.name = template_para.runs[0].font.name if template_para.runs else "Arial"
                     run.font.size = template_para.runs[0].font.size if template_para.runs else Pt(12)
-            paragraph.style = template_para.style if template_para and template_para.style else None
+            paragraph.style = template_para.style if template_para and template_para.style else "Normal"
         
         def format_content(content, indent=0):
             if isinstance(content, str):
@@ -1410,7 +1387,13 @@ def create_reformatted_docx(sections, output_path, client_id=None, user_id=None)
             processed_keys.add(normalized_key)
             
             display_key = key_mapping.get(normalized_key, key.capitalize())
-            if display_key == "References" and value:
+            if display_key == "Name":
+                para = doc.add_paragraph(format_content(value))
+                apply_template_style(para, template_paras[0] if template_paras else None)
+            elif display_key == "Contact":
+                para = doc.add_paragraph(format_content(value).replace("\n", " | "))
+                apply_template_style(para, template_paras[1] if len(template_paras) > 1 else template_paras[0] if template_paras else None)
+            elif display_key == "References" and value:
                 para = doc.add_paragraph("References")
                 apply_template_style(para, next((p for p in template_paras if "references" in p.text.lower()), template_paras[0] if template_paras else None))
                 for ref in value:
