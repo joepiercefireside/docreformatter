@@ -1,106 +1,167 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Diligent Document Reformatter</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-</head>
-<body>
-    <div class="container">
-        <header>
-            <img src="{{ url_for('static', filename='images/diligent_logo.png') }}" alt="Diligent Logo" class="logo">
-            <h1>Diligent Document Reformatter</h1>
-            <nav>
-                <a href="{{ url_for('create_client') }}">Create Client</a> |
-                <a href="{{ url_for('create_prompt') }}">Create Prompt</a> |
-                <a href="{{ url_for('create_template') }}">Create Template</a> |
-                <a href="{{ url_for('logout') }}">Logout</a>
-            </nav>
-        </header>
-        <main>
+{% extends "base.html" %}
+{% block title %}Diligent Document Reformatter{% endblock %}
+{% block content %}
+<div class="container">
+    <div class="card shadow-sm mt-4">
+        <div class="card-body">
+            <h1 class="card-title mb-4">Diligent Document Reformatter</h1>
             {% with messages = get_flashed_messages(with_categories=true) %}
                 {% if messages %}
                     {% for category, message in messages %}
-                        <div class="alert alert-{{ category }}">{{ message }}</div>
+                        <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+                            {{ message }}
+                            <button type="button" class="close" data-dismiss="alert" aria-label="Close">
+                                <span aria-hidden="true">&times;</span>
+                            </button>
+                        </div>
                     {% endfor %}
                 {% endif %}
             {% endwith %}
-            <form method="POST" enctype="multipart/form-data">
-                <input type="hidden" name="action" value="select_client">
-                <label for="client">Select Client:</label>
-                <select id="client" name="client">
-                    <option value="">Select Client</option>
-                    {% for client in clients %}
-                        <option value="{{ client }}" {% if client == selected_client %}selected{% endif %}>{{ client }}</option>
-                    {% endfor %}
-                </select>
-                <br>
-                <label for="template">Select Template:</label>
-                <select id="template" name="template">
-                    <option value="">Select Template</option>
-                    {% for template in templates %}
-                        <option value="{{ template.template_name }}" {% if template.template_name == selected_template %}selected{% endif %}>{{ template.template_name }}</option>
-                    {% endfor %}
-                </select>
-                <br>
-                <label for="prompt_name">Select Prompt:</label>
-                <select id="prompt_name" name="prompt_name">
-                    <option value="Custom" {% if selected_prompt == 'Custom' %}selected{% endif %}>Custom</option>
-                    {% for prompt in prompts %}
-                        <option value="{{ prompt.prompt_name }}" {% if prompt.prompt_name == selected_prompt %}selected{% endif %}>{{ prompt.prompt_name }}</option>
-                    {% endfor %}
-                </select>
-                <br>
-                <label for="ai_prompt">AI Prompt:</label>
-                <textarea id="ai_prompt" name="ai_prompt" rows="10" cols="50">{{ prompt_content }}</textarea>
-                <br>
-                <label for="source_file">Upload Document:</label>
-                <input type="file" id="source_file" name="source_file" accept=".docx">
-                <br>
-                <input type="submit" value="Reformat Document" onclick="this.form.action.value='upload_document';">
+            <form method="POST" enctype="multipart/form-data" id="reformat-form">
+                <input type="hidden" name="action" id="action" value="upload_document">
+                <div class="row">
+                    <div class="col-md-6">
+                        <div class="form-group">
+                            <label for="client">Select Client:</label>
+                            <select class="form-control" id="client" name="client" onchange="updateClient()">
+                                <option value="" {% if not selected_client %}selected{% endif %}>Select a client</option>
+                                {% for client in clients %}
+                                    <option value="{{ client }}" {% if client == selected_client %}selected{% endif %}>{{ client }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="template">Select Template:</label>
+                            <select class="form-control" id="template" name="template" onchange="updateTemplate()">
+                                <option value="">Select a template</option>
+                                {% for template in templates %}
+                                    <option value="{{ template.template_name }}" {% if template.template_name == selected_template %}selected{% endif %}>{{ template.template_name }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="prompt_name">Select Prompt:</label>
+                            <select class="form-control" id="prompt_name" name="prompt_name" onchange="updatePromptContent()">
+                                <option value="Custom" {% if prompt_name == 'Custom' %}selected{% endif %}>Custom</option>
+                                {% for prompt in prompts %}
+                                    <option value="{{ prompt.prompt_name }}" {% if prompt.prompt_name == prompt_name %}selected{% endif %}>{{ prompt.prompt_name }}</option>
+                                {% endfor %}
+                            </select>
+                            <small class="form-text text-muted">Select "Custom" to enter a new prompt below.</small>
+                        </div>
+                        <div class="form-group">
+                            <label for="source_file">Upload Document to Convert:</label>
+                            <input type="file" class="form-control-file" id="source_file" name="source_file" accept=".docx" required>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="form-group">
+                            <label for="ai_prompt">Prompt Content</label>
+                            <div class="card">
+                                <div class="card-body">
+                                    <h5 class="card-title">Prompt for This Conversion:</h5>
+                                    <textarea class="form-control" id="ai_prompt" name="ai_prompt" rows="10">{{ prompt_content }}</textarea>
+                                    <small class="form-text text-muted">Edit the prompt for this conversion only. Required if using a custom prompt.</small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-primary">Reformat Document</button>
             </form>
-        </main>
+        </div>
     </div>
-    <script>
-        $(document).ready(function() {
-            $('#client').change(function() {
-                var clientId = $(this).val();
-                $.post('/load_client', { client: clientId }, function(data) {
-                    $('#template').empty().append('<option value="">Select Template</option>');
-                    $.each(data.templates, function(i, template) {
-                        $('#template').append('<option value="' + template.template_name + '">' + template.template_name + '</option>');
-                    });
-                    $('#prompt_name').empty().append('<option value="Custom">Custom</option>');
-                    $.each(data.prompts, function(i, prompt) {
-                        $('#prompt_name').append('<option value="' + prompt.prompt_name + '">' + prompt.prompt_name + '</option>');
-                    });
-                    $('#ai_prompt').val('');
-                });
-            });
-
-            $('#template').change(function() {
-                var clientId = $('#client').val();
-                var templateName = $(this).val();
-                if (clientId && templateName) {
-                    $.post('/', { client: clientId, template: templateName }, function(data) {
-                        $('#prompt_name').val(data.prompt_name || 'Custom');
-                        $('#ai_prompt').val(data.prompt_content || '');
-                    });
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+function updateClient() {
+    const clientId = document.getElementById('client').value;
+    if (clientId) {
+        fetch('/load_client', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `client=${encodeURIComponent(clientId)}`
+        })
+        .then(response => response.json())
+        .then(data => {
+            const templateSelect = document.getElementById('template');
+            templateSelect.innerHTML = '<option value="">Select a template</option>';
+            data.templates.forEach(template => {
+                const option = document.createElement('option');
+                option.value = template.template_name;
+                option.textContent = template.template_name;
+                if (template.template_name === '{{ selected_template }}') {
+                    option.selected = true;
                 }
+                templateSelect.appendChild(option);
             });
-
-            $('#prompt_name').change(function() {
-                var promptName = $(this).val();
-                var clientId = $('#client').val();
-                if (clientId && promptName && promptName != 'Custom') {
-                    $.post('/load_client', { client: clientId, prompt_name: promptName }, function(data) {
-                        $('#ai_prompt').val(data.prompt_content || '');
-                    });
-                } else {
-                    $('#ai_prompt').val('');
+            const promptSelect = document.getElementById('prompt_name');
+            promptSelect.innerHTML = '<option value="Custom">Custom</option>';
+            data.prompts.forEach(prompt => {
+                const option = document.createElement('option');
+                option.value = prompt.prompt_name;
+                option.textContent = prompt.prompt_name;
+                if (prompt.prompt_name === '{{ prompt_name }}') {
+                    option.selected = true;
                 }
+                promptSelect.appendChild(option);
             });
-        });
-    </script>
-</body>
-</html>
+            document.getElementById('ai_prompt').value = '';
+        })
+        .catch(error => console.error('Error loading client:', error));
+    }
+}
+
+function updateTemplate() {
+    const clientId = document.getElementById('client').value;
+    const templateName = document.getElementById('template').value;
+    if (clientId && templateName) {
+        fetch('/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `client=${encodeURIComponent(clientId)}&template=${encodeURIComponent(templateName)}`
+        })
+        .then(response => response.text())
+        .then(html => {
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(html, 'text/html');
+            const promptName = doc.querySelector('#prompt_name').value || 'Custom';
+            const promptContent = doc.querySelector('#ai_prompt').value || '';
+            document.getElementById('prompt_name').value = promptName;
+            document.getElementById('ai_prompt').value = promptContent;
+        })
+        .catch(error => console.error('Error loading template:', error));
+    } else {
+        document.getElementById('prompt_name').value = 'Custom';
+        document.getElementById('ai_prompt').value = '';
+    }
+}
+
+function updatePromptContent() {
+    const promptName = document.getElementById('prompt_name').value;
+    const clientId = document.getElementById('client').value;
+    if (promptName !== 'Custom' && clientId) {
+        fetch('/load_client', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `client=${encodeURIComponent(clientId)}&prompt_name=${encodeURIComponent(promptName)}`
+        })
+        .then(response => response.json())
+        .then(data => {
+            document.getElementById('ai_prompt').value = data.prompt || '';
+        })
+        .catch(error => console.error('Error loading prompt:', error));
+    } else {
+        document.getElementById('ai_prompt').value = '';
+    }
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    const templateName = document.getElementById('template').value;
+    if (templateName) {
+        updateTemplate();
+    }
+});
+</script>
+{% endblock %}
