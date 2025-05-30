@@ -19,6 +19,7 @@ from hashlib import md5
 from io import BytesIO
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from collections import OrderedDict
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = '/tmp'
@@ -985,13 +986,12 @@ def get_prompts_for_client(client_id, user_id):
 
 def process_text_input(text):
     try:
-        doc = Document()
         paragraphs = text.split('\n')
         current_section = None
         content = {"text_chunks": [], "tables": [], "references": [], "section_order": []}
         chunk = []
-        chunk_size = 1000
         current_chunk_length = 0
+        known_headers = ["introduction", "summary", "experience", "education", "affiliations", "skills", "competencies", "results", "conclusion", "profile", "contact", "name", "career experience"]
 
         for para in paragraphs:
             text = para.strip()
@@ -1003,18 +1003,20 @@ def process_text_input(text):
                 if current_section == "References":
                     content["references"].append(text)
                 else:
-                    # Simple heuristic for section detection in plain text
-                    is_header = text.isupper() or len(text.split()) < 5
+                    is_header = (
+                        text.isupper() or
+                        len(text.split()) < 5 or
+                        any(text.lower().startswith(h) for h in known_headers)
+                    )
                     if is_header:
-                        if current_section:
-                            content["section_order"].append(current_section)
+                        if chunk:
+                            content["text_chunks"].append("\n".join(chunk))
+                            chunk = []
+                            current_chunk_length = 0
                         current_section = text
+                        content["section_order"].append(current_section)
                     chunk.append(f"[{current_section}] {text}" if current_section else text)
                     current_chunk_length += len(text)
-                    if current_chunk_length >= chunk_size and current_section:
-                        content["text_chunks"].append("\n".join(chunk))
-                        chunk = []
-                        current_chunk_length = 0
         if chunk:
             content["text_chunks"].append("\n".join(chunk))
             if current_section and current_section not in content["section_order"]:
@@ -1035,12 +1037,10 @@ def process_docx(file):
         content = {"text_chunks": [], "tables": [], "references": [], "section_order": []}
         in_references = False
         chunk = []
-        chunk_size = 1000
         current_chunk_length = 0
         current_section = None
+        known_headers = ["introduction", "summary", "experience", "education", "affiliations", "skills", "competencies", "results", "conclusion", "profile", "contact", "name", "career experience"]
 
-        known_headers = ["introduction", "summary", "experience", "education", "affiliations", "skills", "competencies", "results", "conclusion"]
-        
         for para in doc.paragraphs:
             text = para.text.strip()
             if text:
@@ -1061,15 +1061,14 @@ def process_docx(file):
                         any(text.lower().startswith(h) for h in known_headers)
                     )
                     if is_header:
-                        if current_section:
-                            content["section_order"].append(current_section)
+                        if chunk:
+                            content["text_chunks"].append("\n".join(chunk))
+                            chunk = []
+                            current_chunk_length = 0
                         current_section = text
+                        content["section_order"].append(current_section)
                     chunk.append(f"[{current_section}] {text}" if current_section else text)
                     current_chunk_length += len(text)
-                    if current_chunk_length >= chunk_size and current_section:
-                        content["text_chunks"].append("\n".join(chunk))
-                        chunk = []
-                        current_chunk_length = 0
         if chunk:
             content["text_chunks"].append("\n".join(chunk))
             if current_section and current_section not in content["section_order"]:
@@ -1131,7 +1130,6 @@ def extract_template_styles(template_path, user_id, client_id, template_name):
     if os.path.exists(cache_path):
         with open(cache_path, 'r') as f:
             styles = json.load(f)
-        # Convert color tuples back to RGBColor
         for section in styles["sections"].values():
             if isinstance(section["color"], list):
                 section["color"] = RGBColor(*section["color"])
@@ -1156,35 +1154,51 @@ def extract_template_styles(template_path, user_id, client_id, template_name):
     
     try:
         doc = Document(template_path) if os.path.exists(template_path) else Document()
+        current_section = None
+        known_headers = ["professional summary", "core competencies", "professional experience", "education", "name", "contact"]
+
         for para in doc.paragraphs:
             text = para.text.strip().lower()
             if not text or not para.runs:
                 continue
             run = para.runs[0]
-            section_name = None
-            if para.runs and (run.bold or (run.font.size is not None and run.font.size > Pt(12)) or text.isupper()):
-                section_name = para.text.strip()
-            style = {
-                "font": run.font.name or "Arial",
-                "size": run.font.size or Pt(11),
-                "bold": run.bold if run.bold is not None else False,
-                "color": (run.font.color.rgb.red, run.font.color.rgb.green, run.font.color.rgb.blue) if run.font.color.rgb else (0, 0, 0),
-                "spacing_before": para.paragraph_format.space_before or Pt(6),
-                "spacing_after": para.paragraph_format.space_after or Pt(6),
-                "alignment": para.paragraph_format.alignment or WD_ALIGN_PARAGRAPH.LEFT,
-                "is_horizontal_list": "•" in para.text and text.count('\n') <= 1,
-                "is_table": False
-            }
-            if section_name:
-                styles["sections"][section_name] = style
-            elif "•" in para.text:
-                styles["sections"]["list_item"] = style
+            is_header = (
+                run.bold or
+                (run.font.size is not None and run.font.size > Pt(12)) or
+                text in known_headers or
+                any(text.startswith(h.lower()) for h in known_headers)
+            )
+            if is_header:
+                current_section = para.text.strip()
+                styles["sections"][current_section] = {
+                    "font": run.font.name or "Arial",
+                    "size": run.font.size or Pt(12),
+                    "bold": run.bold if run.bold is not None else True,
+                    "color": (run.font.color.rgb.red, run.font.color.rgb.green, run.font.color.rgb.blue) if run.font.color.rgb else (0, 0, 0),
+                    "spacing_before": para.paragraph_format.space_before or Pt(6),
+                    "spacing_after": para.paragraph_format.space_after or Pt(6),
+                    "alignment": para.paragraph_format.alignment or WD_ALIGN_PARAGRAPH.LEFT,
+                    "is_horizontal_list": "•" in para.text and text.count('\n') <= 1,
+                    "is_table": False
+                }
+            elif current_section and "•" in para.text:
+                styles["sections"][f"{current_section}_item"] = {
+                    "font": run.font.name or "Arial",
+                    "size": run.font.size or Pt(11),
+                    "bold": run.bold if run.bold is not None else False,
+                    "color": (run.font.color.rgb.red, run.font.color.rgb.green, run.font.color.rgb.blue) if run.font.color.rgb else (0, 0, 0),
+                    "spacing_before": para.paragraph_format.space_before or Pt(0),
+                    "spacing_after": para.paragraph_format.space_after or Pt(0),
+                    "alignment": para.paragraph_format.alignment or WD_ALIGN_PARAGRAPH.LEFT,
+                    "is_horizontal_list": "•" in para.text and text.count('\n') <= 1,
+                    "is_table": False
+                }
         
         for table in doc.tables:
             if table.rows:
                 cell = table.rows[0].cells[0]
                 run = cell.paragraphs[0].runs[0] if cell.paragraphs[0].runs else None
-                style = {
+                styles["sections"]["table"] = {
                     "font": run.font.name or "Arial" if run else "Arial",
                     "size": run.font.size or Pt(11) if run else Pt(11),
                     "bold": run.bold if run and run.bold is not None else False,
@@ -1195,7 +1209,6 @@ def extract_template_styles(template_path, user_id, client_id, template_name):
                     "is_horizontal_list": False,
                     "is_table": True
                 }
-                styles["sections"]["table"] = style
         
         with open(cache_path, 'w') as f:
             json.dump(styles, f)
@@ -1211,13 +1224,15 @@ def generate_supplemental_prompt(template_structure, source_sections):
         "Content-Type": "application/json"
     }
     prompt = f"""
-You are an AI assistant tasked with generating a supplemental prompt to enhance document reformatting. Given the template structure and source sections below, create a concise prompt that:
+You are an AI assistant tasked with generating a supplemental prompt for document reformatting. Given the template structure and source sections, create a concise prompt that:
 
-1. Maps source sections to template sections semantically, based on their content and purpose.
-2. Preserves the source's logical order of content.
-3. Ensures all source content is included, creating new sections if needed to match the template's style.
-4. Specifies formatting for sections (e.g., lists, tables) based on the template's structure.
-5. Avoids including font/size/color details, as these are handled by the application.
+1. Maps source sections to the template's sections (e.g., 'Career Experience' to 'Professional Experience', 'Professional Affiliations' to 'Professional Affiliations').
+2. Consolidates redundant sections (e.g., merge 'Profile' and 'Professional Summary' into 'Professional Summary').
+3. Preserves the source's logical order but aligns with the template's section sequence: ['Name', 'Contact', 'Professional Summary', 'Core Competencies', 'Professional Experience', 'Education', 'Professional Affiliations'].
+4. Ensures all source content is included, creating new sections only if they match the template's style.
+5. Formats sections as per the template (e.g., 'Core Competencies' as a horizontal bulleted list, 'Professional Experience' as structured entries with company, location, dates, role, responsibilities, achievements).
+6. Deduplicates repeated content (e.g., contact info, additional experience).
+7. Excludes font/size/color details, as these are handled by the application.
 
 **Template Structure**: {json.dumps(template_structure, indent=2)}
 **Source Sections**: {json.dumps(source_sections, indent=2)}
@@ -1363,61 +1378,56 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
     # Sort results by chunk index to preserve source order
     results.sort(key=lambda x: x.get("index", float('inf')))
     
-    merged_content = {}
+    # Merge results with deduplication
+    merged_content = OrderedDict()
     errors = []
     processed_items = set()
+    template_sections = ["name", "contact", "professional summary", "core competencies", "professional experience", "education", "professional affiliations"]
+    
     for result in results:
         if "error" in result:
             errors.append(result["error"])
         else:
             for key, value in result["content"].items():
-                if key in merged_content:
-                    if isinstance(value, str) and isinstance(merged_content[key], str):
-                        if value not in processed_items:
-                            merged_content[key] = value + "\n" + merged_content[key]
-                            processed_items.add(value)
-                    elif isinstance(value, dict) and isinstance(merged_content[key], dict):
-                        for subkey, subvalue in value.items():
-                            if isinstance(subvalue, str) and isinstance(merged_content[key].get(subkey, ""), str):
-                                if subvalue not in processed_items:
-                                    merged_content[key][subkey] = subvalue + "\n" + merged_content[key].get(subkey, "")
-                                    processed_items.add(subvalue)
-                            elif isinstance(subvalue, list) and isinstance(merged_content[key].get(subkey, []), list):
-                                new_items = []
-                                for item in subvalue:
-                                    if isinstance(item, dict):
-                                        item_str = json.dumps(item, sort_keys=True)
-                                        if item_str not in processed_items:
-                                            new_items.append(item)
-                                            processed_items.add(item_str)
-                                    elif item not in processed_items:
-                                        new_items.append(item)
-                                        processed_items.add(item)
-                                merged_content[key][subkey] = new_items + merged_content[key].get(subkey, [])
-                            else:
-                                merged_content[key][subkey] = subvalue
-                                if isinstance(subvalue, str):
-                                    processed_items.add(subvalue)
-                    elif isinstance(value, list) and isinstance(merged_content[key], list):
-                        new_items = []
-                        for item in value:
-                            if isinstance(item, dict):
-                                item_str = json.dumps(item, sort_keys=True)
-                                if item_str not in processed_items:
-                                    new_items.append(item)
-                                    processed_items.add(item_str)
-                            elif item not in processed_items:
-                                new_items.append(item)
-                                processed_items.add(item)
-                        merged_content[key] = new_items + merged_content[key]
+                normalized_key = key.lower()
+                if normalized_key in template_sections:
+                    if normalized_key not in merged_content:
+                        merged_content[normalized_key] = value
                     else:
-                        merged_content[key] = value
-                        if isinstance(value, str):
-                            processed_items.add(value)
+                        if isinstance(value, str) and isinstance(merged_content[normalized_key], str):
+                            if value not in processed_items:
+                                merged_content[normalized_key] = f"{merged_content[normalized_key]}\n{value}"
+                                processed_items.add(value)
+                        elif isinstance(value, list) and isinstance(merged_content[normalized_key], list):
+                            for item in value:
+                                item_str = json.dumps(item, sort_keys=True) if isinstance(item, dict) else item
+                                if item_str not in processed_items:
+                                    merged_content[normalized_key].append(item)
+                                    processed_items.add(item_str)
+                        elif isinstance(value, dict) and isinstance(merged_content[normalized_key], dict):
+                            for subkey, subvalue in value.items():
+                                if subkey not in merged_content[normalized_key]:
+                                    merged_content[normalized_key][subkey] = subvalue
+                                elif isinstance(subvalue, str) and isinstance(merged_content[normalized_key][subkey], str):
+                                    if subvalue not in processed_items:
+                                        merged_content[normalized_key][subkey] = f"{merged_content[normalized_key][subkey]}\n{subvalue}"
+                                        processed_items.add(subvalue)
+                                elif isinstance(subvalue, list) and isinstance(merged_content[normalized_key][subkey], list):
+                                    for item in subvalue:
+                                        item_str = json.dumps(item, sort_keys=True) if isinstance(item, dict) else item
+                                        if item_str not in processed_items:
+                                            merged_content[normalized_key][subkey].append(item)
+                                            processed_items.add(item_str)
                 else:
-                    merged_content[key] = value
-                    if isinstance(value, str):
-                        processed_items.add(value)
+                    # Handle unmapped sections (e.g., Additional Experience)
+                    if normalized_key not in merged_content:
+                        merged_content[normalized_key] = value
+                    elif isinstance(value, list) and isinstance(merged_content[normalized_key], list):
+                        for item in value:
+                            item_str = json.dumps(item, sort_keys=True) if isinstance(item, dict) else item
+                            if item_str not in processed_items:
+                                merged_content[normalized_key].append(item)
+                                processed_items.add(item_str)
     
     if errors:
         logger.error(f"Errors in processing: {errors}")
@@ -1426,11 +1436,11 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
             "content": content["text_chunks"][0][:500] if content["text_chunks"] else "",
             "tables": content["tables"],
             "references": content["references"],
-            "section_order": content["section_order"]
+            "section_order": template_sections
         }
     
     merged_content["references"] = content["references"]
-    merged_content["section_order"] = content["section_order"]
+    merged_content["section_order"] = [s for s in template_sections if s in merged_content]
     logger.info(f"Merged AI response: {merged_content}")
     return merged_content
 
@@ -1442,7 +1452,7 @@ def create_reformatted_docx(sections, output_path, client_id=None, user_id=None,
         styles = extract_template_styles(template_path, user_id, client_id, sections.get("template_name", "unknown"))
         
         def apply_template_style(paragraph, section_name):
-            style = styles["sections"].get(section_name.lower(), styles["default"])
+            style = styles["sections"].get(section_name.lower(), styles["sections"].get(f"{section_name.lower()}_item", styles["default"]))
             for run in paragraph.runs:
                 run.bold = style["bold"]
                 run.font.name = style["font"]
@@ -1456,7 +1466,7 @@ def create_reformatted_docx(sections, output_path, client_id=None, user_id=None,
         def format_content(content, indent=0, section_name=None):
             if isinstance(content, str):
                 return content.strip()
-            elif isinstance(content, list) and section_name in styles["sections"] and styles["sections"].get(section_name.lower(), {}).get("is_horizontal_list", False):
+            elif isinstance(content, list) and section_name.lower() in styles["sections"] and styles["sections"].get(section_name.lower(), {}).get("is_horizontal_list", False):
                 return " • ".join(item.strip() for item in content if isinstance(item, str))
             elif isinstance(content, list):
                 formatted = []
@@ -1490,10 +1500,6 @@ def create_reformatted_docx(sections, output_path, client_id=None, user_id=None,
         
         processed_keys = set()
         section_order = sections.get("section_order", [])
-        # Add any sections in the JSON not in section_order
-        for key in sections.keys():
-            if key not in section_order and key not in ["references", "section_order", "error", "content", "tables"]:
-                section_order.append(key)
         
         for key in section_order:
             normalized_key = key.lower()
