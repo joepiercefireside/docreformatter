@@ -17,6 +17,8 @@ import concurrent.futures
 from tempfile import TemporaryDirectory
 from hashlib import md5
 from io import BytesIO
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = '/tmp'
@@ -1051,7 +1053,10 @@ def process_docx(file):
                     content["references"].append(text)
                 else:
                     is_header = (
-                        para.runs and (para.runs[0].bold or para.runs[0].font.size > Pt(12)) or
+                        para.runs and (
+                            para.runs[0].bold or 
+                            (para.runs[0].font.size is not None and para.runs[0].font.size > Pt(12))
+                        ) or
                         text.isupper() or
                         any(text.lower().startswith(h) for h in known_headers)
                     )
@@ -1152,7 +1157,7 @@ def extract_template_styles(template_path, user_id, client_id, template_name):
                 continue
             run = para.runs[0]
             section_name = None
-            if para.runs and (run.bold or run.font.size > Pt(12) or text.isupper()):
+            if para.runs and (run.bold or (run.font.size is not None and run.font.size > Pt(12)) or text.isupper()):
                 section_name = para.text.strip()
             style = {
                 "font": run.font.name or "Arial",
@@ -1214,6 +1219,10 @@ You are an AI assistant tasked with generating a supplemental prompt to enhance 
 
 Output a plain text prompt, starting with "Supplemental Instructions:".
 """
+    session = requests.Session()
+    retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
+    session.mount('https://', HTTPAdapter(max_retries=retries))
+    
     payload = {
         "model": "gpt-4o",
         "messages": [
@@ -1224,7 +1233,7 @@ Output a plain text prompt, starting with "Supplemental Instructions:".
         "temperature": 0.7
     }
     try:
-        response = requests.post(AI_API_URL, headers=headers, json=payload, timeout=10)
+        response = session.post(AI_API_URL, headers=headers, json=payload, timeout=30)
         response.raise_for_status()
         data = response.json()
         if "choices" in data and data["choices"]:
@@ -1249,7 +1258,7 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
     template_structure = {"sections": []}
     for para in template_doc.paragraphs:
         text = para.text.strip()
-        if text and (para.runs and (para.runs[0].bold or para.runs[0].font.size > Pt(12)) or text.isupper()):
+        if text and (para.runs and (para.runs[0].bold or (para.runs[0].font.size is not None and para.runs[0].font.size > Pt(12))) or text.isupper()):
             template_structure["sections"].append({
                 "name": text,
                 "is_list": "•" in para.text,
@@ -1290,8 +1299,12 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
             "temperature": 0.7,
             "response_format": {"type": "json_object"}
         }
+        session = requests.Session()
+        retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
+        session.mount('https://', HTTPAdapter(max_retries=retries))
+        
         try:
-            response = requests.post(AI_API_URL, headers=headers, json=payload, timeout=15)
+            response = session.post(AI_API_URL, headers=headers, json=payload, timeout=30)
             response.raise_for_status()
             if not response.text:
                 logger.error(f"Empty response from API (chunk {chunk_index})")
