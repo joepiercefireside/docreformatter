@@ -1131,7 +1131,12 @@ def extract_template_styles(template_path, user_id, client_id, template_name):
     if os.path.exists(cache_path):
         with open(cache_path, 'r') as f:
             styles = json.load(f)
-        logger.info(f"Loaded cached template styles: {cache_path}")
+        # Convert color tuples back to RGBColor
+        for section in styles["sections"].values():
+            if isinstance(section["color"], list):
+                section["color"] = RGBColor(*section["color"])
+        styles["default"]["color"] = RGBColor(*styles["default"]["color"]) if isinstance(styles["default"]["color"], list) else styles["default"]["color"]
+        logger.info(f"Loaded and converted cached template styles: {cache_path}")
         return styles
     
     styles = {
@@ -1163,7 +1168,7 @@ def extract_template_styles(template_path, user_id, client_id, template_name):
                 "font": run.font.name or "Arial",
                 "size": run.font.size or Pt(11),
                 "bold": run.bold if run.bold is not None else False,
-                "color": run.font.color.rgb or RGBColor(0, 0, 0),
+                "color": (run.font.color.rgb.red, run.font.color.rgb.green, run.font.color.rgb.blue) if run.font.color.rgb else (0, 0, 0),
                 "spacing_before": para.paragraph_format.space_before or Pt(6),
                 "spacing_after": para.paragraph_format.space_after or Pt(6),
                 "alignment": para.paragraph_format.alignment or WD_ALIGN_PARAGRAPH.LEFT,
@@ -1183,7 +1188,7 @@ def extract_template_styles(template_path, user_id, client_id, template_name):
                     "font": run.font.name or "Arial" if run else "Arial",
                     "size": run.font.size or Pt(11) if run else Pt(11),
                     "bold": run.bold if run and run.bold is not None else False,
-                    "color": run.font.color.rgb or RGBColor(0, 0, 0) if run else RGBColor(0, 0, 0),
+                    "color": (run.font.color.rgb.red, run.font.color.rgb.green, run.font.color.rgb.blue) if run and run.font.color.rgb else (0, 0, 0),
                     "spacing_before": Pt(6),
                     "spacing_after": Pt(6),
                     "alignment": WD_ALIGN_PARAGRAPH.LEFT,
@@ -1193,7 +1198,7 @@ def extract_template_styles(template_path, user_id, client_id, template_name):
                 styles["sections"]["table"] = style
         
         with open(cache_path, 'w') as f:
-            json.dump(styles, f, default=str)
+            json.dump(styles, f)
         logger.info(f"Cached template styles: {styles}")
         return styles
     except Exception as e:
