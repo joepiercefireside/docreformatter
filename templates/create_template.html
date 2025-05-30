@@ -1,189 +1,115 @@
-{% extends "base.html" %}
-{% block title %}Create Templates{% endblock %}
-{% block content %}
-<div class="card shadow-sm">
-    <div class="card-body">
-        <h1 class="card-title mb-4">Create/Edit Templates</h1>
-        <form method="GET" action="{{ url_for('create_template') }}">
-            <div class="form-group">
-                <label for="client_id">Select Client:</label>
-                <select class="form-control" id="client_id" name="client_id" onchange="this.form.submit()">
-                    <option value="">Global (All Clients)</option>
-                    {% for client in clients %}
-                        <option value="{{ client }}" {% if client == selected_client %}selected{% endif %}>{{ client }}</option>
-                    {% endfor %}
-                </select>
-            </div>
-        </form>
-        <h3>{% if selected_client %}Templates for {{ selected_client }}{% else %}Global Templates{% endif %}</h3>
-        {% if templates %}
-            <table class="table table-bordered">
-                <thead>
-                    <tr>
-                        <th>Template Name</th>
-                        <th>Associated Prompt</th>
-                        <th>File Status</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for template in templates %}
-                        <tr>
-                            <td>{{ template.template_name }}</td>
-                            <td>{{ template.prompt_name }}</td>
-                            <td>Has File</td>
-                            <td>
-                                <button class="btn btn-sm btn-primary" onclick='editTemplate("{{ template.template_name | safe }}", "{{ template.prompt_name | safe }}", {{ prompts | selectattr("prompt_name", "equalto", template.prompt_name) | map(attribute="prompt_content") | first | default("") | tojson | safe }})'>Edit</button>
-                                <button class="btn btn-sm btn-danger" onclick='deleteTemplate("{{ template.template_name | safe }}", "{{ selected_client | safe }}")'>Delete</button>
-                            </td>
-                        </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        {% else %}
-            <p>No templates found for {% if selected_client %}{{ selected_client }}{% else %}global use{% endif %}.</p>
-        {% endif %}
-        <h3 id="form-title">Create New Template</h3>
-        <form method="POST" enctype="multipart/form-data" id="template-form">
-            <input type="hidden" name="action" id="action" value="create">
-            <input type="hidden" name="client_id" id="client_id_form" value="{{ selected_client }}">
-            <input type="hidden" name="original_template_name" id="original_template_name" value="">
-            <div class="form-group">
-                <label for="template_name">Template Name:</label>
-                <input type="text" class="form-control" id="template_name" name="template_name" required>
-            </div>
-            <div class="form-group">
-                <label for="prompt_name">Select Existing Prompt:</label>
-                <select class="form-control" id="prompt_name" name="prompt_name" onchange="updatePromptContent()">
-                    <option value="">Create a new prompt below</option>
-                    {% for prompt in prompts %}
-                        <option value="{{ prompt.prompt_name }}">{{ prompt.prompt_name }}</option>
-                    {% endfor %}
-                </select>
-            </div>
-            <div class="form-group">
-                <label for="prompt_name_new">New Prompt Name (if creating new):</label>
-                <input type="text" class="form-control" id="prompt_name_new" name="prompt_name_new" oninput="resetPromptDropdown()">
-                <small class="form-text text-muted">Required if creating a new prompt.</small>
-            </div>
-            <div class="form-group">
-                <label for="prompt_content">New Prompt Content (if not selecting existing):</label>
-                <textarea class="form-control" id="prompt_content" name="prompt_content" rows="5"></textarea>
-                <small class="form-text text-muted">Required if creating a new prompt.</small>
-            </div>
-            <div class="form-group">
-                <label for="template_file">Upload Template (.docx):</label>
-                <input type="file" class="form-control-file" id="template_file" name="template_file" accept=".docx" {% if not selected_template %}required{% endif %}>
-                <span id="file-name" class="form-text text-muted"></span>
-                <small id="file-status" class="form-text text-muted">{% if selected_template %}Optional: leave blank to keep existing file. File: Present{% else %}Required for new templates.{% endif %}</small>
-            </div>
-            <div id="create-button" style="display: block;">
-                <button type="submit" class="btn btn-primary">Create Template</button>
-            </div>
-            <div id="edit-buttons" style="display: none;">
-                <button type="submit" class="btn btn-primary">Save Changes</button>
-                <button type="button" class="btn btn-secondary" onclick="cancelEdit()">Cancel</button>
-            </div>
-        </form>
-    </div>
-</div>
-<script>
-function editTemplate(templateName, promptName, promptContent) {
-    document.getElementById('template_name').value = templateName;
-    document.getElementById('prompt_name').value = promptName;
-    document.getElementById('prompt_content').value = promptContent;
-    document.getElementById('prompt_name_new').value = '';
-    document.getElementById('original_template_name').value = templateName;
-    document.getElementById('action').value = 'update';
-    document.getElementById('form-title').textContent = 'Edit Template';
-    document.getElementById('create-button').style.display = 'none';
-    document.getElementById('edit-buttons').style.display = 'block';
-    document.getElementById('template_file').required = false;
-    document.getElementById('file-status').textContent = 'Optional: leave blank to keep existing file. File: Present';
-    document.getElementById('file-name').textContent = `Current file: ${templateName}.docx`;
-}
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
 
-function cancelEdit() {
-    const form = document.getElementById('template-form');
-    const isDirty = Array.from(form.elements).some(element => {
-        if (element.type === 'file') return element.files.length > 0;
-        if (element.type === 'submit' || element.type === 'button') return false;
-        return element.value !== (element.defaultValue || '');
-    });
-    if (isDirty && !confirm('You have unsaved changes. Are you sure you want to cancel?')) {
-        return;
-    }
-    form.reset();
-    document.getElementById('action').value = 'create';
-    document.getElementById('original_template_name').value = '';
-    document.getElementById('form-title').textContent = 'Create New Template';
-    document.getElementById('create-button').style.display = 'block';
-    document.getElementById('edit-buttons').style.display = 'none';
-    document.getElementById('template_file').required = true;
-    document.getElementById('file-status').textContent = 'Required for new templates.';
-    document.getElementById('file-name').textContent = '';
-}
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
 
-function deleteTemplate(templateName, clientId) {
-    if (confirm(`Are you sure you want to delete the template "${templateName}"?`)) {
-        fetch('/delete_template', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: `client_id=${encodeURIComponent(clientId)}&template_name=${encodeURIComponent(templateName)}`
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                alert('Template deleted successfully');
-                window.location.reload();
-            } else {
-                alert(`Failed to delete template: ${data.error}`);
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
             }
-        })
-        .catch(error => alert(`Error deleting template: ${error}`));
-    }
-}
-
-function clearNewPromptFields() {
-    document.getElementById('prompt_name_new').value = '';
-    document.getElementById('prompt_content').value = '';
-}
-
-function resetPromptDropdown() {
-    document.getElementById('prompt_name').value = '';
-}
-
-function updatePromptContent() {
-    const promptName = document.getElementById('prompt_name').value;
-    const clientId = document.getElementById('client_id').value || '';
-    if (promptName) {
-        fetch('/load_client', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: `client_id=${encodeURIComponent(clientId)}&prompt_name=${encodeURIComponent(promptName)}`
-        })
-        .then(response => response.json())
-        .then(data => {
-            document.getElementById('prompt_content').value = data.prompt || '';
-        })
-        .catch(error => console.error('Error loading prompt:', error));
-    } else {
-        document.getElementById('prompt_content').value = '';
-    }
-}
-
-document.getElementById('template-form').addEventListener('submit', function(event) {
-    const templateName = document.getElementById('template_name').value.trim();
-    const existingTemplates = [
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html>
+<head>
+    <title>Create Template</title>
+    <style>
+        .alert { padding: 10px; margin: 10px 0; border-radius: 5px; }
+        .alert-success { background-color: #d4edda; color: #155724; }
+        .alert-danger { background-color: #f8d7da; color: #721c24; }
+        form { margin: 20px 0; }
+        label { display: block; margin: 10px 0 5px; }
+        input[type="text"], select, input[type="file"] { width: 100%; padding: 8px; margin-bottom: 10px; }
+        button { padding: 10px 20px; background-color: #007bff; color: white; border: none; cursor: pointer; margin-right: 10px; }
+        button:hover { background-color: #0056b3; }
+        ul { list-style-type: none; padding: 0; }
+        li { margin: 5px 0; }
+    </style>
+</head>
+<body>
+    <h1>Create Template</h1>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="alert alert-{{ category }}">{{ message }}</div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+    <form method="POST" action="{{ url_for('template.create_template') }}" enctype="multipart/form-data">
+        <label for="client_id">Client:</label>
+        <select id="client_id" name="client_id">
+            <option value="">Global</option>
+            {% for client in clients %}
+                <option value="{{ client.client_id }}" {% if client.client_id == selected_client %}selected{% endif %}>{{ client.name }}</option>
+            {% endfor %}
+        </select>
+        <label for="template_name">Template Name:</label>
+        <input type="text" id="template_name" name="template_name" value="{{ selected_template }}" required>
+        <label for="template_prompt_id">Template Prompt:</label>
+        <select id="template_prompt_id" name="template_prompt_id" required>
+            <option value="">Select Template Prompt</option>
+            {% for prompt in prompts %}
+                <option value="{{ prompt.id }}" {% if prompt.id == selected_template.template_prompt_id %}selected{% endif %}>{{ prompt.prompt_name }}</option>
+            {% endfor %}
+        </select>
+        <label for="conversion_prompt_id">Conversion Prompt (Optional):</label>
+        <select id="conversion_prompt_id" name="conversion_prompt_id">
+            <option value="">None</option>
+            {% for prompt in conversion_prompts %}
+                <option value="{{ prompt.id }}" {% if prompt.id == selected_template.conversion_prompt_id %}selected{% endif %}>{{ prompt.prompt_name }}</option>
+            {% endfor %}
+        </select>
+        <label for="template_file">Template File (Optional):</label>
+        <input type="file" id="template_file" name="template_file" accept=".docx">
+        <input type="hidden" name="original_template_name" value="{{ selected_template }}">
+        <input type="hidden" name="action" value="{{ 'update' if selected_template else 'create' }}">
+        <button type="submit">{{ 'Update' if selected_template else 'Create' }} Template</button>
+    </form>
+    <h2>Existing Templates</h2>
+    <ul>
         {% for template in templates %}
-            '{{ template.template_name | safe }}',
+            <li>{{ template.template_name }} (Prompt: {{ template.template_prompt_name }})
+                <a href="{{ url_for('template.create_template', client_id=selected_client, edit_template=template.id) }}">Edit</a>
+                <form action="{{ url_for('template.create_template_file', template_id=template.id) }}" method="POST" style="display:inline;">
+                    <button type="submit">Create File from Prompt</button>
+                </form>
+                <form action="{{ url_for('template.create_prompt_from_file', template_id=template.id) }}" method="POST" style="display:inline;">
+                    <button type="submit">Create Prompt from File</button>
+                </form>
+                {% if template.has_file %}
+                    <a href="{{ url_for('template.view_template_file', template_id=template.id) }}">View Template File</a>
+                {% endif %}
+            </li>
         {% endfor %}
-    ];
-    const action = document.getElementById('action').value;
-    if (action === 'create' && existingTemplates.includes(templateName)) {
-        alert('A template with this name already exists for this client. Please choose a different name.');
-        event.preventDefault();
-    }
-});
-</script>
-{% endblock %}
+    </ul>
+    <a href="{{ url_for('main.index') }}">Back to Home</a>
+</body>
+</html>

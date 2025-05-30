@@ -1,119 +1,99 @@
-{% extends "base.html" %}
-{% block title %}Create Prompts{% endblock %}
-{% block content %}
-<div class="card shadow-sm">
-    <div class="card-body">
-        <h1 class="card-title mb-4">Create/Edit Prompts</h1>
-        <form method="GET" action="{{ url_for('create_prompt') }}">
-            <div class="form-group">
-                <label for="client_id">Select Client:</label>
-                <select class="form-control" id="client_id" name="client_id" onchange="this.form.submit()">
-                    <option value="">Global (All Clients)</option>
-                    {% for client in clients %}
-                        <option value="{{ client }}" {% if client == selected_client %}selected{% endif %}>{{ client }}</option>
-                    {% endfor %}
-                </select>
-            </div>
-        </form>
-        <h3>{% if selected_client %}Prompts for {{ selected_client }}{% else %}Global Prompts{% endif %}</h3>
-        {% if prompts %}
-            <table class="table table-bordered">
-                <thead>
-                    <tr>
-                        <th>Prompt Name</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for prompt in prompts %}
-                        <tr>
-                            <td>{{ prompt.prompt_name }}</td>
-                            <td>
-                                <button class="btn btn-sm btn-primary" onclick='editPrompt("{{ prompt.prompt_name | safe }}", {{ prompt.prompt_content | tojson | safe }})'>Edit</button>
-                                <button class="btn btn-sm btn-danger" onclick='deletePrompt("{{ prompt.prompt_name | safe }}", "{{ selected_client | safe }}")'>Delete</button>
-                            </td>
-                        </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        {% else %}
-            <p>No prompts found for {% if selected_client %}{{ selected_client }}{% else %}global use{% endif %}.</p>
-        {% endif %}
-        <h3 id="form-title">Create New Prompt</h3>
-        <form method="POST" id="prompt-form">
-            <input type="hidden" name="action" id="action" value="create">
-            <input type="hidden" name="client_id" value="{{ selected_client }}">
-            <input type="hidden" name="original_prompt_name" id="original_prompt_name" value="">
-            <div class="form-group">
-                <label for="prompt_name">Prompt Name:</label>
-                <input type="text" class="form-control" id="prompt_name" name="prompt_name" required>
-            </div>
-            <div class="form-group">
-                <label for="prompt_content">Prompt Content:</label>
-                <textarea class="form-control" id="prompt_content" name="prompt_content" rows="5" required></textarea>
-            </div>
-            <div id="create-button" style="display: block;">
-                <button type="submit" class="btn btn-primary">Create Prompt</button>
-            </div>
-            <div id="edit-buttons" style="display: none;">
-                <button type="submit" class="btn btn-primary">Save Changes</button>
-                <button type="button" class="btn btn-secondary" onclick="cancelEdit()">Cancel</button>
-            </div>
-        </form>
-    </div>
-</div>
-<script>
-function editPrompt(promptName, promptContent) {
-    document.getElementById('prompt_name').value = promptName;
-    document.getElementById('prompt_content').value = promptContent;
-    document.getElementById('original_prompt_name').value = promptName;
-    document.getElementById('action').value = 'update';
-    document.getElementById('form-title').textContent = 'Edit Prompt';
-    document.getElementById('create-button').style.display = 'none';
-    document.getElementById('edit-buttons').style.display = 'block';
-}
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
 
-function cancelEdit() {
-    document.getElementById('prompt-form').reset();
-    document.getElementById('action').value = 'create';
-    document.getElementById('original_prompt_name').value = '';
-    document.getElementById('form-title').textContent = 'Create New Prompt';
-    document.getElementById('create-button').style.display = 'block';
-    document.getElementById('edit-buttons').style.display = 'none';
-}
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
 
-function deletePrompt(promptName, clientId) {
-    if (confirm(`Are you sure you want to delete the prompt "${promptName}"?`)) {
-        fetch('/delete_prompt', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: `client_id=${encodeURIComponent(clientId)}&prompt_name=${encodeURIComponent(promptName)}`
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                alert('Prompt deleted successfully');
-                window.location.reload();
-            } else {
-                alert(`Failed to delete prompt: ${data.error}`);
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
             }
-        })
-        .catch(error => alert(`Error deleting prompt: ${error}`));
-    }
-}
-
-document.getElementById('prompt-form').addEventListener('submit', function(event) {
-    const promptName = document.getElementById('prompt_name').value.trim();
-    const existingPrompts = [
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html>
+<head>
+    <title>Create Prompt</title>
+    <style>
+        .alert { padding: 10px; margin: 10px 0; border-radius: 5px; }
+        .alert-success { background-color: #d4edda; color: #155724; }
+        .alert-danger { background-color: #f8d7da; color: #721c24; }
+        form { margin: 20px 0; }
+        label { display: block; margin: 10px 0 5px; }
+        input[type="text"], select, textarea { width: 100%; padding: 8px; margin-bottom: 10px; }
+        textarea { height: 200px; }
+        button { padding: 10px 20px; background-color: #007bff; color: white; border: none; cursor: pointer; }
+        button:hover { background-color: #0056b3; }
+        ul { list-style-type: none; padding: 0; }
+        li { margin: 5px 0; }
+    </style>
+</head>
+<body>
+    <h1>Create Prompt</h1>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="alert alert-{{ category }}">{{ message }}</div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+    <form method="POST" action="{{ url_for('prompt.create_prompt') }}">
+        <label for="client_id">Client:</label>
+        <select id="client_id" name="client_id">
+            <option value="">Global</option>
+            {% for client in clients %}
+                <option value="{{ client.client_id }}" {% if client.client_id == selected_client %}selected{% endif %}>{{ client.name }}</option>
+            {% endfor %}
+        </select>
+        <label for="prompt_name">Prompt Name:</label>
+        <input type="text" id="prompt_name" name="prompt_name" value="{{ selected_prompt }}" required>
+        <label for="prompt_type">Prompt Type:</label>
+        <select id="prompt_type" name="prompt_type">
+            <option value="template" {% if selected_prompt_type == 'template' %}selected{% endif %}>Template</option>
+            <option value="conversion" {% if selected_prompt_type == 'conversion' %}selected{% endif %}>Conversion</option>
+        </select>
+        <label for="content">Content:</label>
+        <textarea id="content" name="content" required>{{ prompts|selectattr('id', 'equalto', selected_prompt|int)|map(attribute='content')|first if selected_prompt else '' }}</textarea>
+        <input type="hidden" name="original_prompt_name" value="{{ selected_prompt }}">
+        <input type="hidden" name="original_prompt_type" value="{{ selected_prompt_type }}">
+        <input type="hidden" name="action" value="{{ 'update' if selected_prompt else 'create' }}">
+        <button type="submit">{{ 'Update' if selected_prompt else 'Create' }} Prompt</button>
+    </form>
+    <h2>Existing Prompts</h2>
+    <ul>
         {% for prompt in prompts %}
-            '{{ prompt.prompt_name | safe }}',
+            <li>{{ prompt.prompt_name }} ({{ prompt.prompt_type }}) 
+                <a href="{{ url_for('prompt.create_prompt', client_id=selected_client, edit_prompt=prompt.id, prompt_type=prompt.prompt_type) }}">Edit</a>
+            </li>
         {% endfor %}
-    ];
-    const action = document.getElementById('action').value;
-    if (action === 'create' && existingPrompts.includes(promptName)) {
-        alert('A prompt with this name already exists for this client. Please choose a different name.');
-        event.preventDefault();
-    }
-});
-</script>
-{% endblock %}
+    </ul>
+    <a href="{{ url_for('main.index') }}">Back to Home</a>
+</body>
+</html>
