@@ -3,7 +3,7 @@ from flask_login import LoginManager
 from authlib.integrations.flask_client import OAuth
 import os
 import logging
-from .utils.database import init_db
+from .utils import init_db  # Updated import
 from .routes.auth import auth_bp
 from .routes.client import client_bp
 from .routes.prompt import prompt_bp
