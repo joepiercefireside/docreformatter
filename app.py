@@ -15,6 +15,8 @@ import secrets
 import logging
 import concurrent.futures
 from tempfile import TemporaryDirectory
+from hashlib import md5
+from io import BytesIO
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = '/tmp'
@@ -252,7 +254,16 @@ def create_client():
                 conn = get_db_connection()
                 cur = conn.cursor()
                 cur.execute(
-                    "INSERT INTO settings (user_id, client_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                    "SELECT id FROM settings WHERE user_id = %s AND client_id = %s",
+                    (current_user.id, client_id)
+                )
+                if cur.fetchone():
+                    flash(f'Client "{client_id}" already exists', 'danger')
+                    cur.close()
+                    conn.close()
+                    return redirect(url_for('create_client'))
+                cur.execute(
+                    "INSERT INTO settings (user_id, client_id) VALUES (%s, %s)",
                     (current_user.id, client_id)
                 )
                 conn.commit()
@@ -461,6 +472,11 @@ def create_template():
                     (current_user.id, client_id, Json(prompt_json) if prompt_json else None, prompt_name, file_data, template_name)
                 )
                 conn.commit()
+                # Clear cached styles
+                cache_key = md5(f"{current_user.id}_{client_id}_{template_name}".encode()).hexdigest()
+                cache_path = os.path.join(app.config['UPLOAD_FOLDER'], f'template_styles_{cache_key}.json')
+                if os.path.exists(cache_path):
+                    os.remove(cache_path)
                 flash(f'Template "{template_name}" created successfully', 'success')
                 cur.close()
                 conn.close()
@@ -516,6 +532,11 @@ def create_template():
                         "WHERE user_id = %s AND client_id = %s AND template_name = %s",
                         (template_file.read(), Json(prompt_json) if prompt_json else None, prompt_name, template_name, current_user.id, client_id, original_template_name)
                     )
+                    # Clear cached styles
+                    cache_key = md5(f"{current_user.id}_{client_id}_{template_name}".encode()).hexdigest()
+                    cache_path = os.path.join(app.config['UPLOAD_FOLDER'], f'template_styles_{cache_key}.json')
+                    if os.path.exists(cache_path):
+                        os.remove(cache_path)
                 else:
                     cur.execute(
                         "UPDATE settings SET prompt = %s, prompt_name = %s, template_name = %s "
@@ -534,7 +555,7 @@ def create_template():
                 return redirect(url_for('create_template', client_id=client_id))
             except Exception as e:
                 logger.error(f"Error updating template: {str(e)}")
-                flash(f'Failed to create template: {str(e)}', 'danger')
+                flash(f'Failed to update template: {str(e)}', 'danger')
                 return redirect(url_for('create_template', client_id=client_id))
     
     if selected_client:
@@ -576,6 +597,11 @@ def delete_template():
         conn.commit()
         cur.close()
         conn.close()
+        # Remove cached styles
+        cache_key = md5(f"{current_user.id}_{client_id}_{template_name}".encode()).hexdigest()
+        cache_path = os.path.join(app.config['UPLOAD_FOLDER'], f'template_styles_{cache_key}.json')
+        if os.path.exists(cache_path):
+            os.remove(cache_path)
         logger.info(f"Deleted template '{template_name}' for client {client_id or 'global'}, user {current_user.id}")
         return jsonify({'success': True}), 200
     except Exception as e:
@@ -632,6 +658,11 @@ def delete_client():
         conn.commit()
         cur.close()
         conn.close()
+        # Remove cached styles for client
+        cache_dir = app.config['UPLOAD_FOLDER']
+        for f in os.listdir(cache_dir):
+            if f.startswith(f'template_styles_{current_user.id}_{client_id}_'):
+                os.remove(os.path.join(cache_dir, f))
         logger.info(f"Deleted client '{client_id}' for user {current_user.id}")
         return jsonify({'success': True}), 200
     except Exception as e:
@@ -755,6 +786,7 @@ def index():
         prompt_name = request.form.get('prompt_name', 'Custom')
         source_file = request.files.get('source_file')
         ai_prompt = request.form.get('ai_prompt')
+        source_text = request.form.get('source_text', '')
 
         if source_file and source_file.filename.endswith('.docx'):
             template_name = selected_template if selected_template else None
@@ -782,12 +814,45 @@ def index():
                     temp_template_path = os.path.join(temp_dir, 'temp_template.docx')
                     fetch_template(temp_template_path, selected_client, current_user.id, template_name)
                     output_path = os.path.join(temp_dir, 'reformatted_document.docx')
-                    sections = call_ai_api(content, selected_client, current_user.id, prompt_name, custom_prompt=ai_prompt)
-                    create_reformatted_docx(sections, output_path, selected_client, current_user.id)
+                    sections = call_ai_api(content, selected_client, current_user.id, prompt_name, custom_prompt=ai_prompt, template_path=temp_template_path)
+                    create_reformatted_docx(sections, output_path, selected_client, current_user.id, template_path=temp_template_path)
                     return send_file(output_path, as_attachment=True, download_name='reformatted_document.docx')
             except Exception as e:
                 logger.error(f"Error processing document: {str(e)}")
                 flash(f"Error processing document: {str(e)}", 'error')
+
+        elif source_text:
+            template_name = selected_template if selected_template else None
+            if template_name and not ai_prompt:
+                conn = get_db_connection()
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT prompt->'prompt' AS prompt_content "
+                    "FROM settings "
+                    "WHERE user_id = %s AND (client_id = %s OR client_id = '') AND template_name = %s AND prompt IS NOT NULL LIMIT 1",
+                    (current_user.id, selected_client, template_name)
+                )
+                result = cur.fetchone()
+                cur.close()
+                conn.close()
+                if result:
+                    ai_prompt = result[0]
+                else:
+                    flash('No prompt found for the selected template.', 'error')
+                    return redirect(url_for('index'))
+
+            try:
+                content = process_text_input(source_text)
+                with TemporaryDirectory() as temp_dir:
+                    temp_template_path = os.path.join(temp_dir, 'temp_template.docx')
+                    fetch_template(temp_template_path, selected_client, current_user.id, template_name)
+                    output_path = os.path.join(temp_dir, 'reformatted_document.docx')
+                    sections = call_ai_api(content, selected_client, current_user.id, prompt_name, custom_prompt=ai_prompt, template_path=temp_template_path)
+                    create_reformatted_docx(sections, output_path, selected_client, current_user.id, template_path=temp_template_path)
+                    return send_file(output_path, as_attachment=True, download_name='reformatted_document.docx')
+            except Exception as e:
+                logger.error(f"Error processing text input: {str(e)}")
+                flash(f"Error processing text input: {str(e)}", 'error')
 
         if selected_template:
             conn = get_db_connection()
@@ -813,14 +878,7 @@ def index():
 AI_API_URL = os.environ.get('AI_API_URL', 'https://api.openai.com/v1/chat/completions')
 API_KEY = os.environ.get('API_KEY', 'your-api-key')
 
-DEFAULT_AI_PROMPT = """You are a medical document analyst. Analyze the provided document content and categorize it into the following sections based on the input text and tables:
-- Summary: A concise overview of the drug, its purpose, and key findings.
-- Background: Context about the disease or condition the drug treats.
-- Monograph: Official prescribing information, usage guidelines, or clinical details.
-- Real-World Experiences: Patient or clinician experiences, if present (else empty).
-- Enclosures: Descriptions of supporting documents, posters, or additional materials.
-- Tables: Assign tables to appropriate sections (e.g., 'Patient Demographics', 'Adverse Events') based on their content.
-Return a JSON object with these keys and the corresponding content extracted or rewritten from the input. Preserve references separately. Ensure the response is valid JSON. For tables, return a dictionary where keys are descriptive section names and values are lists of rows, each row being a list of cell values. Focus on accurately interpreting and summarizing the source material, avoiding any formatting instructions."""
+DEFAULT_AI_PROMPT = """You are a document analyst. Analyze the provided document content and categorize it into sections based on the input text and tables. Return a JSON object with keys representing section headers and values containing the extracted or rewritten content. Preserve references separately. Ensure the response is valid JSON. For tables, return a dictionary where keys are descriptive section names and values are lists of rows, each row being a list of cell values. Focus on accurately interpreting and summarizing the source material."""
 
 def load_prompt(client_id=None, user_id=None, prompt_name=None):
     try:
@@ -923,35 +981,94 @@ def get_prompts_for_client(client_id, user_id):
         logger.error(f"Error getting prompts for client: {str(e)}")
         return []
 
+def process_text_input(text):
+    try:
+        doc = Document()
+        paragraphs = text.split('\n')
+        current_section = None
+        content = {"text_chunks": [], "tables": [], "references": [], "section_order": []}
+        chunk = []
+        chunk_size = 1000
+        current_chunk_length = 0
+
+        for para in paragraphs:
+            text = para.strip()
+            if text:
+                if text.lower().startswith("references"):
+                    current_section = "References"
+                    content["section_order"].append(current_section)
+                    continue
+                if current_section == "References":
+                    content["references"].append(text)
+                else:
+                    # Simple heuristic for section detection in plain text
+                    is_header = text.isupper() or len(text.split()) < 5
+                    if is_header:
+                        if current_section:
+                            content["section_order"].append(current_section)
+                        current_section = text
+                    chunk.append(f"[{current_section}] {text}" if current_section else text)
+                    current_chunk_length += len(text)
+                    if current_chunk_length >= chunk_size and current_section:
+                        content["text_chunks"].append("\n".join(chunk))
+                        chunk = []
+                        current_chunk_length = 0
+        if chunk:
+            content["text_chunks"].append("\n".join(chunk))
+            if current_section and current_section not in content["section_order"]:
+                content["section_order"].append(current_section)
+        
+        logger.info(f"Processed text input section order: {content['section_order']}")
+        return content
+    except Exception as e:
+        logger.error(f"Error processing text input: {str(e)}")
+        raise
+
 def process_docx(file):
     try:
         filename = secure_filename(file.filename)
         input_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(input_path)
         doc = Document(input_path)
-        content = {"text_chunks": [], "tables": [], "references": []}
+        content = {"text_chunks": [], "tables": [], "references": [], "section_order": []}
         in_references = False
         chunk = []
-        chunk_size = 1000  # Characters per chunk
+        chunk_size = 1000
         current_chunk_length = 0
+        current_section = None
 
+        known_headers = ["introduction", "summary", "experience", "education", "affiliations", "skills", "competencies", "results", "conclusion"]
+        
         for para in doc.paragraphs:
             text = para.text.strip()
             if text:
                 if text.lower().startswith("references"):
                     in_references = True
+                    current_section = "References"
+                    content["section_order"].append(current_section)
                     continue
                 if in_references:
                     content["references"].append(text)
                 else:
-                    chunk.append(text)
+                    is_header = (
+                        para.runs and (para.runs[0].bold or para.runs[0].font.size > Pt(12)) or
+                        text.isupper() or
+                        any(text.lower().startswith(h) for h in known_headers)
+                    )
+                    if is_header:
+                        if current_section:
+                            content["section_order"].append(current_section)
+                        current_section = text
+                    chunk.append(f"[{current_section}] {text}" if current_section else text)
                     current_chunk_length += len(text)
-                    if current_chunk_length >= chunk_size:
+                    if current_chunk_length >= chunk_size and current_section:
                         content["text_chunks"].append("\n".join(chunk))
                         chunk = []
                         current_chunk_length = 0
         if chunk:
             content["text_chunks"].append("\n".join(chunk))
+            if current_section and current_section not in content["section_order"]:
+                content["section_order"].append(current_section)
 
         for table in doc.tables:
             table_data = []
@@ -963,6 +1080,7 @@ def process_docx(file):
                 logger.info(f"Extracted table: {table_data}")
                 content["tables"].append(table_data)
         os.remove(input_path)
+        logger.info(f"Source section order: {content['section_order']}")
         return content
     except Exception as e:
         logger.error(f"Error processing docx: {str(e)}")
@@ -1001,25 +1119,167 @@ def fetch_template(output_path, client_id=None, user_id=None, template_name=None
         logger.error(f"Error fetching template: {str(e)}")
         return False
 
-def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_prompt=None):
+def extract_template_styles(template_path, user_id, client_id, template_name):
+    cache_key = md5(f"{user_id}_{client_id}_{template_name}".encode()).hexdigest()
+    cache_path = os.path.join(app.config['UPLOAD_FOLDER'], f'template_styles_{cache_key}.json')
+    
+    if os.path.exists(cache_path):
+        with open(cache_path, 'r') as f:
+            styles = json.load(f)
+        logger.info(f"Loaded cached template styles: {cache_path}")
+        return styles
+    
+    styles = {
+        "sections": {},
+        "default": {
+            "font": "Arial",
+            "size": Pt(11),
+            "bold": False,
+            "color": RGBColor(0, 0, 0),
+            "spacing_before": Pt(6),
+            "spacing_after": Pt(6),
+            "alignment": WD_ALIGN_PARAGRAPH.LEFT,
+            "is_horizontal_list": False,
+            "is_table": False
+        }
+    }
+    
+    try:
+        doc = Document(template_path) if os.path.exists(template_path) else Document()
+        for para in doc.paragraphs:
+            text = para.text.strip().lower()
+            if not text or not para.runs:
+                continue
+            run = para.runs[0]
+            section_name = None
+            if para.runs and (run.bold or run.font.size > Pt(12) or text.isupper()):
+                section_name = para.text.strip()
+            style = {
+                "font": run.font.name or "Arial",
+                "size": run.font.size or Pt(11),
+                "bold": run.bold if run.bold is not None else False,
+                "color": run.font.color.rgb or RGBColor(0, 0, 0),
+                "spacing_before": para.paragraph_format.space_before or Pt(6),
+                "spacing_after": para.paragraph_format.space_after or Pt(6),
+                "alignment": para.paragraph_format.alignment or WD_ALIGN_PARAGRAPH.LEFT,
+                "is_horizontal_list": "•" in para.text and text.count('\n') <= 1,
+                "is_table": False
+            }
+            if section_name:
+                styles["sections"][section_name] = style
+            elif "•" in para.text:
+                styles["sections"]["list_item"] = style
+        
+        for table in doc.tables:
+            if table.rows:
+                cell = table.rows[0].cells[0]
+                run = cell.paragraphs[0].runs[0] if cell.paragraphs[0].runs else None
+                style = {
+                    "font": run.font.name or "Arial" if run else "Arial",
+                    "size": run.font.size or Pt(11) if run else Pt(11),
+                    "bold": run.bold if run and run.bold is not None else False,
+                    "color": run.font.color.rgb or RGBColor(0, 0, 0) if run else RGBColor(0, 0, 0),
+                    "spacing_before": Pt(6),
+                    "spacing_after": Pt(6),
+                    "alignment": WD_ALIGN_PARAGRAPH.LEFT,
+                    "is_horizontal_list": False,
+                    "is_table": True
+                }
+                styles["sections"]["table"] = style
+        
+        with open(cache_path, 'w') as f:
+            json.dump(styles, f, default=str)
+        logger.info(f"Cached template styles: {styles}")
+        return styles
+    except Exception as e:
+        logger.error(f"Error extracting template styles: {str(e)}")
+        return styles
+
+def generate_supplemental_prompt(template_structure, source_sections):
     headers = {
         "Authorization": f"Bearer {API_KEY}",
         "Content-Type": "application/json"
     }
-    ai_prompt = custom_prompt if custom_prompt else load_prompt(client_id, user_id, prompt_name)
+    prompt = f"""
+You are an AI assistant tasked with generating a supplemental prompt to enhance document reformatting. Given the template structure and source sections below, create a concise prompt that:
+
+1. Maps source sections to template sections semantically, based on their content and purpose.
+2. Preserves the source's logical order of content.
+3. Ensures all source content is included, creating new sections if needed to match the template's style.
+4. Specifies formatting for sections (e.g., lists, tables) based on the template's structure.
+5. Avoids including font/size/color details, as these are handled by the application.
+
+**Template Structure**: {json.dumps(template_structure, indent=2)}
+**Source Sections**: {json.dumps(source_sections, indent=2)}
+
+Output a plain text prompt, starting with "Supplemental Instructions:".
+"""
+    payload = {
+        "model": "gpt-4o",
+        "messages": [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": "Generate the supplemental prompt."}
+        ],
+        "max_tokens": 500,
+        "temperature": 0.7
+    }
+    try:
+        response = requests.post(AI_API_URL, headers=headers, json=payload, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        if "choices" in data and data["choices"]:
+            supplemental = data["choices"][0]["message"]["content"]
+            logger.info(f"Generated supplemental prompt: {supplemental[:200]}...")
+            return supplemental
+        logger.error("No choices in supplemental prompt response")
+        return ""
+    except Exception as e:
+        logger.error(f"Error generating supplemental prompt: {str(e)}")
+        return ""
+
+def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_prompt=None, template_path=None):
+    headers = {
+        "Authorization": f"Bearer {API_KEY}",
+        "Content-Type": "application/json"
+    }
+    base_prompt = custom_prompt if custom_prompt else load_prompt(client_id, user_id, prompt_name)
+    
+    # Extract template structure
+    template_doc = Document(template_path) if template_path and os.path.exists(template_path) else Document()
+    template_structure = {"sections": []}
+    for para in template_doc.paragraphs:
+        text = para.text.strip()
+        if text and (para.runs and (para.runs[0].bold or para.runs[0].font.size > Pt(12)) or text.isupper()):
+            template_structure["sections"].append({
+                "name": text,
+                "is_list": "•" in para.text,
+                "is_table": False
+            })
+    for table in template_doc.tables:
+        if table.rows:
+            template_structure["sections"].append({
+                "name": "Table",
+                "is_list": False,
+                "is_table": True
+            })
+    
+    # Prepare source sections
+    source_sections = content.get("section_order", [])
+    
+    # Generate supplemental prompt
+    supplemental_prompt = generate_supplemental_prompt(template_structure, source_sections)
+    full_prompt = f"{base_prompt}\n\n{supplemental_prompt}"
     
     def process_chunk(chunk_text, tables, chunk_index):
         messages = [
             {
                 "role": "system",
-                "content": ai_prompt + "\nEnsure the response is strictly valid JSON with proper delimiters (e.g., commas), no trailing or incomplete content, and all keys and values properly closed. Use JSON mode if available. For tables, include their text content as lists. For images, describe their content or extract text if possible."
+                "content": full_prompt
             },
             {
                 "role": "user",
                 "content": [
                     {"type": "text", "text": f"Input Text (Chunk {chunk_index}):\n{chunk_text}\n\nTables:\n{json.dumps(tables)}"}
-                    # Add image handling if applicable (future enhancement)
-                    # {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,<base64_data>"}} 
                 ]
             }
         ]
@@ -1096,7 +1356,7 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
                 if key in merged_content:
                     if isinstance(value, str) and isinstance(merged_content[key], str):
                         if value not in processed_items:
-                            merged_content[key] = value + "\n" + merged_content[key]  # Prepend to maintain order
+                            merged_content[key] = value + "\n" + merged_content[key]
                             processed_items.add(value)
                     elif isinstance(value, dict) and isinstance(merged_content[key], dict):
                         for subkey, subvalue in value.items():
@@ -1147,82 +1407,38 @@ def call_ai_api(content, client_id=None, user_id=None, prompt_name=None, custom_
             "error": "; ".join(errors),
             "content": content["text_chunks"][0][:500] if content["text_chunks"] else "",
             "tables": content["tables"],
-            "references": content["references"]
+            "references": content["references"],
+            "section_order": content["section_order"]
         }
     
     merged_content["references"] = content["references"]
+    merged_content["section_order"] = content["section_order"]
     logger.info(f"Merged AI response: {merged_content}")
     return merged_content
 
-def create_reformatted_docx(sections, output_path, client_id=None, user_id=None):
+def create_reformatted_docx(sections, output_path, client_id=None, user_id=None, template_path=None):
     try:
-        template_path = os.path.join(app.config['UPLOAD_FOLDER'], 'temp_template.docx')
-        template_doc = Document(template_path) if os.path.exists(template_path) else Document()
+        template_doc = Document(template_path) if template_path and os.path.exists(template_path) else Document()
         doc = Document()
         
-        def apply_template_style(paragraph, section_type, template_doc):
-            template_paras = template_doc.paragraphs if template_doc.paragraphs else []
-            template_para = None
-            if section_type == "name":
-                template_para = next((p for p in template_paras if p.text.strip() and not p.text.startswith(("Professional", "Core", "Experience", "Education"))), None)
-                if template_para and template_para.runs:
-                    for run in paragraph.runs:
-                        run.bold = True
-                        run.font.name = template_para.runs[0].font.name if template_para.runs[0].font.name else "Arial"
-                        run.font.size = Pt(14)
-                        run.font.color.rgb = RGBColor(0, 0, 0)
-                else:
-                    for run in paragraph.runs:
-                        run.bold = True
-                        run.font.name = "Arial"
-                        run.font.size = Pt(14)
-                        run.font.color.rgb = RGBColor(0, 0, 0)
-                paragraph.paragraph_format.space_after = Pt(12)
-            elif section_type == "header":
-                template_para = next((p for p in template_paras if p.text.strip() in ["Professional Summary", "Core Competencies", "Professional Experience", "Education"]), None)
-                if template_para and template_para.runs:
-                    for run in paragraph.runs:
-                        run.bold = True
-                        run.font.name = template_para.runs[0].font.name if template_para.runs[0].font.name else "Arial"
-                        run.font.size = Pt(12)
-                        run.font.color.rgb = RGBColor(0, 0, 0)
-                else:
-                    for run in paragraph.runs:
-                        run.bold = True
-                        run.font.name = "Arial"
-                        run.font.size = Pt(12)
-                        run.font.color.rgb = RGBColor(0, 0, 0)
-                paragraph.paragraph_format.space_after = Pt(6)
-            else:
-                template_para = next((p for p in template_paras if p.text.strip()), None)
-                if template_para and template_para.runs:
-                    for run in paragraph.runs:
-                        run.bold = template_para.runs[0].bold if template_para.runs else False
-                        run.font.name = template_para.runs[0].font.name if template_para.runs[0].font.name else "Arial"
-                        run.font.size = Pt(11)
-                        run.font.color.rgb = RGBColor(0, 0, 0)
-                else:
-                    for run in paragraph.runs:
-                        run.bold = False
-                        run.font.name = "Arial"
-                        run.font.size = Pt(11)
-                        run.font.color.rgb = RGBColor(0, 0, 0)
-                paragraph.paragraph_format.space_before = Pt(6)
-                paragraph.paragraph_format.space_after = Pt(6)
-            paragraph.paragraph_format.alignment = template_para.paragraph_format.alignment if template_para and template_para.paragraph_format else None
-            paragraph.style = template_para.style if template_para and template_para.style else "Normal"
+        styles = extract_template_styles(template_path, user_id, client_id, sections.get("template_name", "unknown"))
         
-        def is_horizontal_list(template_doc, section_name):
-            template_paras = template_doc.paragraphs if template_doc.paragraphs else []
-            for para in template_paras:
-                if section_name.lower() in para.text.lower() and "•" in para.text:
-                    return True
-            return False
+        def apply_template_style(paragraph, section_name):
+            style = styles["sections"].get(section_name.lower(), styles["default"])
+            for run in paragraph.runs:
+                run.bold = style["bold"]
+                run.font.name = style["font"]
+                run.font.size = style["size"]
+                run.font.color.rgb = style["color"]
+            paragraph.paragraph_format.space_before = style["spacing_before"]
+            paragraph.paragraph_format.space_after = style["spacing_after"]
+            paragraph.paragraph_format.alignment = style["alignment"]
+            paragraph.style = "Normal"
         
-        def format_content(content, indent=0, section_name=None, template_doc=None):
+        def format_content(content, indent=0, section_name=None):
             if isinstance(content, str):
                 return content.strip()
-            elif isinstance(content, list) and section_name == "Core Competencies" and is_horizontal_list(template_doc, "Core Competencies"):
+            elif isinstance(content, list) and section_name in styles["sections"] and styles["sections"].get(section_name.lower(), {}).get("is_horizontal_list", False):
                 return " • ".join(item.strip() for item in content if isinstance(item, str))
             elif isinstance(content, list):
                 formatted = []
@@ -1232,96 +1448,77 @@ def create_reformatted_docx(sections, output_path, client_id=None, user_id=None)
                     elif isinstance(item, dict):
                         sub_formatted = []
                         for subkey, subvalue in item.items():
-                            subcontent = format_content(subvalue, indent + 1, section_name, template_doc)
+                            subcontent = format_content(subvalue, indent + 1, section_name)
                             if subcontent:
                                 sub_formatted.append(f"{subkey}: {subcontent}")
                         formatted.append("\n".join(sub_formatted))
                     elif isinstance(item, list):
-                        formatted.extend(format_content(item, indent + 1, section_name, template_doc))
+                        formatted.extend(format_content(item, indent + 1, section_name))
                 return "\n".join(formatted)
             elif isinstance(content, dict):
                 formatted = []
                 for subkey, subvalue in content.items():
-                    subcontent = format_content(subvalue, indent + 1, section_name, template_doc)
+                    subcontent = format_content(subvalue, indent + 1, section_name)
                     if subcontent:
                         formatted.append(f"{'  ' * indent}{subkey}: {subcontent}")
                 return "\n".join(formatted)
             return ""
 
-        template_paras = template_doc.paragraphs if template_doc.paragraphs else []
-        logger.info(f"Template paragraphs count: {len(template_paras)}")
-
         if "error" in sections:
             para = doc.add_paragraph(f"Error: {sections['error']}")
-            apply_template_style(para, "body", template_doc)
+            apply_template_style(para, "default")
             doc.save(output_path)
             return
         
-        key_mapping = {
-            "name": "Name",
-            "contact": "Contact",
-            "contact_information": "Contact",
-            "professional summary": "Professional Summary",
-            "summary": "Professional Summary",
-            "core competencies": "Core Competencies",
-            "skills": "Core Competencies",
-            "professional_experience": "Professional Experience",
-            "work_experience": "Professional Experience",
-            "work experience": "Professional Experience",
-            "experience": "Professional Experience",
-            "education": "Education",
-            "affiliations": "Affiliations",
-            "professional_affiliations": "Professional Affiliations",
-            "certifications": "Certifications",
-            "projects_awards": "Projects and Awards",
-            "projects & awards": "Projects and Awards"
-        }
-        
         processed_keys = set()
-        for key in ["name", "contact", "professional summary", "core competencies", "professional experience", "education", "professional affiliations", "affiliations", "references"]:
+        section_order = sections.get("section_order", [])
+        # Add any sections in the JSON not in section_order
+        for key in sections.keys():
+            if key not in section_order and key not in ["references", "section_order", "error", "content", "tables"]:
+                section_order.append(key)
+        
+        for key in section_order:
             normalized_key = key.lower()
             if normalized_key not in sections or normalized_key in processed_keys:
                 continue
-            processed_keys.add(normalized_key)
-            
-            display_key = key_mapping.get(normalized_key, key.capitalize())
             value = sections[normalized_key]
-            
             if not value or (isinstance(value, str) and not value.strip()) or (isinstance(value, list) and not value):
                 continue
+            processed_keys.add(normalized_key)
             
-            if display_key == "Name":
-                para = doc.add_paragraph(format_content(value, section_name=display_key, template_doc=template_doc))
-                apply_template_style(para, "name", template_doc)
-            elif display_key == "Contact":
-                para = doc.add_paragraph(format_content(value, section_name=display_key, template_doc=template_doc).replace("\n", " | "))
-                apply_template_style(para, "body", template_doc)
-            elif display_key in ["Professional Summary", "Core Competencies", "Professional Experience", "Education", "Professional Affiliations"]:
+            display_key = key.capitalize()
+            
+            if display_key.lower() in styles["sections"]:
                 para = doc.add_paragraph(display_key)
-                apply_template_style(para, "header", template_doc)
-                formatted_content = format_content(value, section_name=display_key, template_doc=template_doc)
+                apply_template_style(para, display_key)
+                formatted_content = format_content(value, section_name=display_key)
                 if formatted_content:
-                    lines = formatted_content.split("\n")
-                    for line in lines:
-                        if line.strip():
-                            para = doc.add_paragraph(line, style="List Bullet" if line.startswith("•") else None)
-                            apply_template_style(para, "body", template_doc)
-            elif display_key == "References" and value:
-                para = doc.add_paragraph("References")
-                apply_template_style(para, "header", template_doc)
-                for ref in value:
-                    para = doc.add_paragraph(ref, style="List Bullet")
-                    apply_template_style(para, "body", template_doc)
+                    if styles["sections"].get(display_key.lower(), {}).get("is_horizontal_list", False):
+                        para = doc.add_paragraph(formatted_content)
+                        apply_template_style(para, display_key)
+                    elif styles["sections"].get(display_key.lower(), {}).get("is_table", False):
+                        table_data = value if isinstance(value, list) else [value]
+                        table = doc.add_table(rows=len(table_data), cols=len(table_data[0]) if table_data else 1)
+                        for i, row_data in enumerate(table_data):
+                            for j, cell_data in enumerate(row_data):
+                                table.rows[i].cells[j].text = str(cell_data)
+                        apply_template_style(table.rows[0].cells[0].paragraphs[0], display_key)
+                    else:
+                        lines = formatted_content.split("\n")
+                        for line in lines:
+                            if line.strip():
+                                para = doc.add_paragraph(line, style="List Bullet" if line.startswith("•") else None)
+                                apply_template_style(para, display_key)
             else:
                 para = doc.add_paragraph(display_key)
-                apply_template_style(para, "header", template_doc)
-                formatted_content = format_content(value, section_name=display_key, template_doc=template_doc)
+                apply_template_style(para, "default")
+                formatted_content = format_content(value, section_name=display_key)
                 if formatted_content:
                     lines = formatted_content.split("\n")
                     for line in lines:
                         if line.strip():
                             para = doc.add_paragraph(line, style="List Bullet" if line.startswith("•") else None)
-                            apply_template_style(para, "body", template_doc)
+                            apply_template_style(para, "default")
         
         doc.save(output_path)
         logger.info(f"Successfully created reformatted document: {output_path}")
