@@ -19,4 +19,5 @@ def load_user(user_id):
             return User(user[0], user[1], user[2])
         return None
     except Exception as e:
+        print(f"Error loading user: {str(e)}")  # Temporary logging
         return None

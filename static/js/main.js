@@ -1,75 +1,48 @@
+function updatePrompts() {
+    const templateSelect = document.getElementById('template');
+    const templatePrompt = document.getElementById('template_prompt');
+    const conversionPrompt = document.getElementById('conversion_prompt');
+    if (templateSelect && templatePrompt && conversionPrompt) {
+        const selectedTemplate = templateSelect.options[templateSelect.selectedIndex];
+        if (selectedTemplate && selectedTemplate.dataset.prompt) {
+            templatePrompt.value = selectedTemplate.dataset.prompt.replace(/\\n/g, '\n');
+            conversionPrompt.value = selectedTemplate.dataset.conversion ? selectedTemplate.dataset.conversion.replace(/\\n/g, '\n') : '';
+        } else {
+            templatePrompt.value = '';
+            conversionPrompt.value = '';
+        }
+    }
+}
+
 function loadTemplateContent() {
-    var clientId = document.getElementById('client_id').value;
-    var templateName = document.getElementById('template_name').value;
+    const clientId = document.getElementById('client') ? document.getElementById('client').value : '';
+    const templateId = document.getElementById('template') ? document.getElementById('template').value : '';
     
-    if (templateName && clientId) {
-        $.ajax({
-            url: '/load_client',
-            type: 'POST',
-            data: {
-                client_id: clientId,
-                template_name: templateName
+    if (templateId) {
+        fetch('/load_client', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
             },
-            success: function(response) {
-                if (response.prompt && response.prompt_name) {
-                    document.getElementById('custom_prompt').value = response.prompt;
-                    document.getElementById('prompt_name_group').style.display = 'none';
-                } else {
-                    document.getElementById('custom_prompt').value = '';
-                    document.getElementById('prompt_name_group').style.display = 'block';
-                    document.getElementById('prompt_name').value = 'Custom';
-                    alert('No prompt associated with this template; please select or create a prompt');
-                }
-            },
-            error: function() {
-                document.getElementById('custom_prompt').value = '';
-                document.getElementById('prompt_name_group').style.display = 'block';
-                document.getElementById('prompt_name').value = 'Custom';
-                alert('Error loading prompt for template');
+            body: new URLSearchParams({
+                'client_id': clientId,
+                'template_id': templateId
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.prompt && data.prompt_name) {
+                document.getElementById('template_prompt').value = data.prompt;
+            } else {
+                document.getElementById('template_prompt').value = '';
+                alert('No prompt associated with this template');
             }
+        })
+        .catch(error => {
+            document.getElementById('template_prompt').value = '';
+            alert('Error loading template prompt');
         });
     } else {
-        document.getElementById('custom_prompt').value = '';
-        document.getElementById('prompt_name_group').style.display = 'block';
-        document.getElementById('prompt_name').value = 'Custom';
+        document.getElementById('template_prompt').value = '';
     }
-}
-
-function loadPromptContent() {
-    var clientId = document.getElementById('client_id').value;
-    var promptName = document.getElementById('prompt_name').value;
-    
-    if (promptName && promptName !== 'Custom' && clientId) {
-        $.ajax({
-            url: '/load_client',
-            type: 'POST',
-            data: {
-                client_id: clientId,
-                prompt_name: promptName
-            },
-            success: function(response) {
-                if (response.prompt) {
-                    document.getElementById('custom_prompt').value = response.prompt;
-                } else {
-                    document.getElementById('custom_prompt').value = '';
-                    alert('Failed to load prompt content');
-                }
-            },
-            error: function() {
-                document.getElementById('custom_prompt').value = '';
-                alert('Error loading prompt content');
-            }
-        });
-    } else {
-        document.getElementById('custom_prompt').value = '';
-    }
-}
-
-function toggleTemplateUpload() {
-    var templateUpload = document.getElementById('templateUpload');
-    templateUpload.style.display = templateUpload.style.display === 'none' ? 'block' : 'none';
-    document.getElementById('template_name').value = '';
-    document.getElementById('prompt_name_group').style.display = 'block';
-    document.getElementById('prompt_name').value = 'Custom';
-    document.getElementById('custom_prompt').value = '';
 }
