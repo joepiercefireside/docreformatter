@@ -1,6 +1,5 @@
-<!-- templates/register.html -->
 {% extends "base.html" %}
-{% block title %}Register - Diligent Doc Reformatter{% endblock %}
+{% block title %}Register - AI Document Converter{% endblock %}
 {% block content %}
 <div class="row justify-content-center">
     <div class="col-md-6">
@@ -9,7 +8,7 @@
                 <i class="fas fa-user-plus"></i> Register
             </div>
             <div class="card-body">
-                <form method="POST" action="{{ url_for('register') }}">
+                <form method="POST" action="{{ url_for('auth.register') }}">
                     <div class="mb-3">
                         <label for="email" class="form-label">Email</label>
                         <input type="email" class="form-control" id="email" name="email" required>
@@ -23,7 +22,7 @@
                     </button>
                 </form>
                 <p class="mt-3">
-                    Already have an account? <a href="{{ url_for('login') }}">Login</a>
+                    Already have an account? <a href="{{ url_for('auth.login') }}">Login</a>
                 </p>
             </div>
         </div>
