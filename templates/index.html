@@ -1,123 +1,153 @@
-<script type="text/javascript">
-        var gk_isXlsx = false;
-        var gk_xlsxFileLookup = {};
-        var gk_fileData = {};
-        function filledCell(cell) {
-          return cell !== '' && cell != null;
-        }
-        function loadFileData(filename) {
-        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
-            try {
-                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
-                var firstSheetName = workbook.SheetNames[0];
-                var worksheet = workbook.Sheets[firstSheetName];
-
-                // Convert sheet to JSON to filter blank rows
-                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
-                // Filter out blank rows (rows where all cells are empty, null, or undefined)
-                var filteredData = jsonData.filter(row => row.some(filledCell));
-
-                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
-                var headerRowIndex = filteredData.findIndex((row, index) =>
-                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
-                );
-                // Fallback
-                if (headerRowIndex === -1 || headerRowIndex > 25) {
-                  headerRowIndex = 0;
-                }
-
-                // Convert filtered JSON back to CSV
-                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
-                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
-                return csv;
-            } catch (e) {
-                console.error(e);
-                return "";
-            }
-        }
-        return gk_fileData[filename] || "";
-        }
-        </script><!DOCTYPE html>
-<html>
-<head>
-    <title>Document Reformatter</title>
-    <style>
-        .alert { padding: 10px; margin: 10px 0; border-radius: 5px; }
-        .alert-success { background-color: #d4edda; color: #155724; }
-        .alert-danger { background-color: #f8d7da; color: #721c24; }
-        form { margin: 20px 0; }
-        label { display: block; margin: 10px 0 5px; }
-        input[type="text"], select, textarea, input[type="file"] { width: 100%; padding: 8px; margin-bottom: 10px; }
-        textarea { height: 200px; }
-        button { padding: 10px 20px; background-color: #007bff; color: white; border: none; cursor: pointer; margin-right: 10px; }
-        button:hover { background-color: #0056b3; }
-        pre { background-color: #f8f9fa; padding: 10px; border-radius: 5px; }
-    </style>
-    <script>
-        function loadTemplatePrompt() {
-            const templateId = document.getElementById('template').value;
-            const templates = {{ templates|tojson }};
-            const template = templates.find(t => t.id == templateId);
-            if (template) {
-                document.getElementById('template_prompt').value = template.template_prompt_content || '';
-                document.getElementById('conversion_prompt').value = template.conversion_prompt_content || '';
-            } else {
-                document.getElementById('template_prompt').value = '';
-                document.getElementById('conversion_prompt').value = '';
-            }
-        }
-    </script>
-</head>
-<body>
-    <h1>Document Reformatter</h1>
-    {% with messages = get_flashed_messages(with_categories=true) %}
-        {% if messages %}
-            {% for category, message in messages %}
-                <div class="alert alert-{{ category }}">{{ message }}</div>
-            {% endfor %}
+{% extends "base.html" %}
+{% block title %}Document Reformatter{% endblock %}
+{% block content %}
+<div class="card shadow-sm">
+    <div class="card-body">
+        <h1 class="card-title mb-4">Document Reformatter</h1>
+        <form method="POST" action="{{ url_for('main.index') }}" enctype="multipart/form-data" id="reformat-form">
+            <input type="hidden" name="action" id="action" value="convert">
+            <div class="row">
+                <div class="col-md-6">
+                    <div class="form-group">
+                        <label for="client">Select Client:</label>
+                        <select class="form-control" id="client" name="client" onchange="submitAction('select_client')">
+                            <option value="">Select a client</option>
+                            {% for client in clients %}
+                                <option value="{{ client.client_id }}" {% if client.client_id == selected_client %}selected{% endif %}>{{ client.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="template">Select Template:</label>
+                        <select class="form-control" id="template" name="template" onchange="updateTemplateLabelAndStatus()">
+                            <option value="">Select a template</option>
+                            {% for template in templates %}
+                                <option value="{{ template.id }}"
+                                        {% if template.id|string == selected_template %}selected{% endif %}
+                                        data-prompt="{{ template.template_prompt_content|replace('\n', '\\n')|e }}"
+                                        data-conversion="{{ template.conversion_prompt_content|replace('\n', '\\n')|e if template.conversion_prompt_content else '' }}">
+                                    {{ template.template_name }}
+                                </option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="conversion_prompt_id">Select Conversion Prompt:</label>
+                        <select class="form-control" id="conversion_prompt_id" name="conversion_prompt_id" onchange="updatePromptContent()">
+                            <option value="">None</option>
+                            {% for prompt in conversion_prompts %}
+                                <option value="{{ prompt.id }}" {% if prompt.id|string == conversion_prompt_id %}selected{% endif %}>{{ prompt.prompt_name }}</option>
+                            {% endfor %}
+                        </select>
+                        <small class="form-text text-muted">Select a conversion prompt or leave as "None".</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="source_file">Upload Document to Convert:</label>
+                        <input type="file" class="form-control-file" id="source_file" name="source_file" accept=".docx" required>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="form-group">
+                        <label>Template Prompt Content</label>
+                        <div class="card">
+                            <div class="card-body">
+                                <h5 class="card-title">Template Prompt for This Conversion:</h5>
+                                <textarea class="form-control" id="template_prompt" name="template_prompt" rows="10">{{ template_prompt }}</textarea>
+                                <small class="form-text text-muted">This prompt is based on the selected template.</small>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Conversion Prompt Content (Optional)</label>
+                        <div class="card">
+                            <div class="card-body">
+                                <h5 class="card-title">Conversion Prompt for This Conversion:</h5>
+                                <textarea class="form-control" id="conversion_prompt" name="conversion_prompt" rows="10">{{ conversion_prompt }}</textarea>
+                                <small class="form-text text-muted">This prompt is based on the selected conversion prompt, if any.</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <button type="submit" class="btn btn-primary mt-3">Reformat Document</button>
+        </form>
+        {% if converted_content %}
+            <div class="card shadow-sm mt-4">
+                <div class="card-body">
+                    <h2 class="card-title mb-4">Converted Content Preview</h2>
+                    <pre>{{ converted_content|tojson(indent=2) }}</pre>
+                    <form method="POST" action="{{ url_for('main.index') }}" class="d-inline">
+                        <input type="hidden" name="action" value="accept">
+                        <button type="submit" class="btn btn-success">Accept Conversion</button>
+                    </form>
+                    <form method="POST" action="{{ url_for('main.index') }}" class="d-inline">
+                        <input type="hidden" name="action" value="make_changes">
+                        <button type="submit" class="btn btn-secondary">Make Changes</button>
+                    </form>
+                </div>
+            </div>
         {% endif %}
-    {% endwith %}
-    <form method="POST" action="{{ url_for('main.index') }}" enctype="multipart/form-data">
-        <label for="client">Client:</label>
-        <select id="client" name="client">
-            <option value="">Global</option>
-            {% for client in clients %}
-                <option value="{{ client.client_id }}" {% if client.client_id == selected_client %}selected{% endif %}>{{ client.name }}</option>
-            {% endfor %}
-        </select>
-        <label for="template">Template:</label>
-        <select id="template" name="template" onchange="loadTemplatePrompt()">
-            <option value="">Select Template</option>
-            {% for template in templates %}
-                <option value="{{ template.id }}" {% if template.id == selected_template %}selected{% endif %}>{{ template.template_name }}</option>
-            {% endfor %}
-        </select>
-        <label for="template_prompt">Template Prompt:</label>
-        <textarea id="template_prompt" name="template_prompt">{{ template_prompt }}</textarea>
-        <label for="conversion_prompt">Conversion Prompt (Optional):</label>
-        <textarea id="conversion_prompt" name="conversion_prompt">{{ conversion_prompt }}</textarea>
-        <label for="source_file">Source File:</label>
-        <input type="file" id="source_file" name="source_file" accept=".docx">
-        <label for="source_text">Or Enter Source Text:</label>
-        <textarea id="source_text" name="source_text"></textarea>
-        <input type="hidden" name="action" value="convert">
-        <button type="submit">Convert</button>
-    </form>
-    {% if converted_content %}
-        <h2>Converted Content</h2>
-        <pre>{{ converted_content|tojson(indent=2) }}</pre>
-        <form method="POST" action="{{ url_for('main.index') }}" style="display:inline;">
-            <input type="hidden" name="action" value="accept">
-            <button type="submit">Accept Conversion</button>
-        </form>
-        <form method="POST" action="{{ url_for('main.index') }}" style="display:inline;">
-            <input type="hidden" name="action" value="make_changes">
-            <button type="submit">Make Changes</button>
-        </form>
-    {% endif %}
-    <a href="{{ url_for('client.create_client') }}">Manage Clients</a> | 
-    <a href="{{ url_for('prompt.create_prompt') }}">Manage Prompts</a> | 
-    <a href="{{ url_for('template.create_template') }}">Manage Templates</a> | 
-    <a href="{{ url_for('auth.logout') }}">Logout</a>
-</body>
-</html>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/main.js') }}" defer></script>
+<script>
+function submitAction(action) {
+    document.getElementById('action').value = action;
+    document.getElementById('reformat-form').submit();
+}
+
+function updatePromptContent() {
+    const promptId = document.getElementById('conversion_prompt_id').value;
+    const clientId = document.getElementById('client').value || '';
+    if (promptId) {
+        fetch('/load_client', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `client_id=${encodeURIComponent(clientId)}&prompt_id=${encodeURIComponent(promptId)}`
+        })
+        .then(response => response.json())
+        .then(data => {
+            document.getElementById('conversion_prompt').value = data.prompt || '';
+        })
+        .catch(error => {
+            console.error('Error loading prompt:', error);
+            document.getElementById('conversion_prompt').value = '';
+        });
+    } else {
+        document.getElementById('conversion_prompt').value = '';
+    }
+}
+
+function updateTemplateLabelAndStatus() {
+    const templateId = document.getElementById('template').value;
+    const clientId = document.getElementById('client').value || '';
+    const templatePrompt = document.getElementById('template_prompt');
+    const conversionPrompt = document.getElementById('conversion_prompt');
+    if (templateId) {
+        fetch('/load_client', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `client_id=${encodeURIComponent(clientId)}&template_id=${encodeURIComponent(templateId)}`
+        })
+        .then(response => response.json())
+        .then(data => {
+            templatePrompt.value = data.prompt ? data.prompt.replace(/\\n/g, '\n') : '';
+            conversionPrompt.value = data.conversion ? data.conversion.replace(/\\n/g, '\n') : '';
+        })
+        .catch(error => {
+            console.error('Error loading template:', error);
+            templatePrompt.value = '';
+            conversionPrompt.value = '';
+        });
+    } else {
+        templatePrompt.value = '';
+        conversionPrompt.value = '';
+    }
+}
+
+document.getElementById('template').addEventListener('change', updateTemplateLabelAndStatus);
+document.addEventListener('DOMContentLoaded', updateTemplateLabelAndStatus);
+</script>
+{% endblock %}
