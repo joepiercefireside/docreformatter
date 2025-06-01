@@ -192,42 +192,47 @@ def create_template_file(template_id):
             "Authorization": f"Bearer {os.environ.get('API_KEY')}",
             "Content-Type": "application/json"
         }
+        
+        # Construct prompt using string concatenation to avoid nested f-strings
+        system_prompt = (
+            "Given the following template prompt, generate a JSON object describing a .docx file structure, "
+            "including sections, content placeholders, and styling (font, size, bold, color in RGB, alignment, spacing). "
+            "Use the prompt to infer the document's layout and semantics.\n\n"
+            "**Prompt**: " + prompt_content + "\n\n"
+            "**Output Format**:\n"
+            "```json\n"
+            "{\n"
+            "  \"sections\": [\n"
+            "    {\n"
+            "      \"header\": \"Section Name\",\n"
+            "      \"content\": [\"Placeholder text or instructions\"],\n"
+            "      \"style\": {\n"
+            "        \"font\": \"Font Name\",\n"
+            "        \"size_pt\": Number,\n"
+            "        \"bold\": Boolean,\n"
+            "        \"color_rgb\": [R, G, B],\n"
+            "        \"alignment\": \"left|center|right|justify\",\n"
+            "        \"spacing_before_pt\": Number,\n"
+            "        \"spacing_after_pt\": Number,\n"
+            "        \"is_horizontal_list\": Boolean\n"
+            "      }\n"
+            "    },\n"
+            "    ...\n"
+            "  ]\n"
+            "}\n"
+            "```\n"
+        )
+        
         payload = {
             "model": "gpt-4o",
             "messages": [
-                {"role": "system", "content": f"""
-                    Given the following template prompt, generate a JSON object describing a .docx file structure, including sections, content placeholders, and styling (font, size, bold, color in RGB, alignment, spacing). Use the prompt to infer the document's layout and semantics.
-
-                    **Prompt**: {prompt_content}
-
-                    **Output Format**:
-                    ```json
-                    {
-                      "sections": [
-                        {
-                          "header": "Section Name",
-                          "content": ["Placeholder text or instructions"],
-                          "style": {
-                            "font": "Font Name",
-                            "size_pt": Number,
-                            "bold": Boolean,
-                            "color_rgb": [R, G, B],
-                            "alignment": "left|center|right|justify",
-                            "spacing_before_pt": Number,
-                            "spacing_after_pt": Number,
-                            "is_horizontal_list": Boolean
-                          }
-                        },
-                        ...
-                      ]
-                    }
-                    ```
-                """},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": "Generate the .docx structure."}
             ],
             "max_tokens": 1000,
             "temperature": 0.7
         }
+        
         session = requests.Session()
         retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
         session.mount('https://', HTTPAdapter(max_retries=retries))
@@ -364,11 +369,11 @@ def create_prompt_from_file(template_id):
             elif current_section:
                 sections[-1]["content"].append(text)
 
-        prompt_content = f"Generate a resume with the following sections and styling:\n\n"
+        prompt_content = "Generate a resume with the following sections and styling:\n\n"
         for section in sections:
             prompt_content += f"**Section: {section['header']}**\n"
             prompt_content += f"- **Purpose**: {section['header'].lower().replace(' ', '_')} content (e.g., professional experience includes job roles, responsibilities, achievements).\n"
-            prompt_content += f"- **Style**:\n"
+            prompt_content += "- **Style**:\n"
             prompt_content += f"  - Font: {section['style']['font']}\n"
             prompt_content += f"  - Size: {section['style']['size_pt']}pt\n"
             prompt_content += f"  - Bold: {section['style']['bold']}\n"
