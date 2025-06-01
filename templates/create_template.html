@@ -1,115 +1,74 @@
-<script type="text/javascript">
-        var gk_isXlsx = false;
-        var gk_xlsxFileLookup = {};
-        var gk_fileData = {};
-        function filledCell(cell) {
-          return cell !== '' && cell != null;
-        }
-        function loadFileData(filename) {
-        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
-            try {
-                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
-                var firstSheetName = workbook.SheetNames[0];
-                var worksheet = workbook.Sheets[firstSheetName];
-
-                // Convert sheet to JSON to filter blank rows
-                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
-                // Filter out blank rows (rows where all cells are empty, null, or undefined)
-                var filteredData = jsonData.filter(row => row.some(filledCell));
-
-                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
-                var headerRowIndex = filteredData.findIndex((row, index) =>
-                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
-                );
-                // Fallback
-                if (headerRowIndex === -1 || headerRowIndex > 25) {
-                  headerRowIndex = 0;
-                }
-
-                // Convert filtered JSON back to CSV
-                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
-                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
-                return csv;
-            } catch (e) {
-                console.error(e);
-                return "";
-            }
-        }
-        return gk_fileData[filename] || "";
-        }
-        </script><!DOCTYPE html>
-<html>
-<head>
-    <title>Create Template</title>
-    <style>
-        .alert { padding: 10px; margin: 10px 0; border-radius: 5px; }
-        .alert-success { background-color: #d4edda; color: #155724; }
-        .alert-danger { background-color: #f8d7da; color: #721c24; }
-        form { margin: 20px 0; }
-        label { display: block; margin: 10px 0 5px; }
-        input[type="text"], select, input[type="file"] { width: 100%; padding: 8px; margin-bottom: 10px; }
-        button { padding: 10px 20px; background-color: #007bff; color: white; border: none; cursor: pointer; margin-right: 10px; }
-        button:hover { background-color: #0056b3; }
-        ul { list-style-type: none; padding: 0; }
-        li { margin: 5px 0; }
-    </style>
-</head>
-<body>
-    <h1>Create Template</h1>
-    {% with messages = get_flashed_messages(with_categories=true) %}
-        {% if messages %}
-            {% for category, message in messages %}
-                <div class="alert alert-{{ category }}">{{ message }}</div>
-            {% endfor %}
-        {% endif %}
-    {% endwith %}
-    <form method="POST" action="{{ url_for('template.create_template') }}" enctype="multipart/form-data">
-        <label for="client_id">Client:</label>
-        <select id="client_id" name="client_id">
-            <option value="">Global</option>
-            {% for client in clients %}
-                <option value="{{ client.client_id }}" {% if client.client_id == selected_client %}selected{% endif %}>{{ client.name }}</option>
-            {% endfor %}
-        </select>
-        <label for="template_name">Template Name:</label>
-        <input type="text" id="template_name" name="template_name" value="{{ selected_template }}" required>
-        <label for="template_prompt_id">Template Prompt:</label>
-        <select id="template_prompt_id" name="template_prompt_id" required>
-            <option value="">Select Template Prompt</option>
-            {% for prompt in prompts %}
-                <option value="{{ prompt.id }}" {% if prompt.id == selected_template.template_prompt_id %}selected{% endif %}>{{ prompt.prompt_name }}</option>
-            {% endfor %}
-        </select>
-        <label for="conversion_prompt_id">Conversion Prompt (Optional):</label>
-        <select id="conversion_prompt_id" name="conversion_prompt_id">
-            <option value="">None</option>
-            {% for prompt in conversion_prompts %}
-                <option value="{{ prompt.id }}" {% if prompt.id == selected_template.conversion_prompt_id %}selected{% endif %}>{{ prompt.prompt_name }}</option>
-            {% endfor %}
-        </select>
-        <label for="template_file">Template File (Optional):</label>
-        <input type="file" id="template_file" name="template_file" accept=".docx">
-        <input type="hidden" name="original_template_name" value="{{ selected_template }}">
-        <input type="hidden" name="action" value="{{ 'update' if selected_template else 'create' }}">
-        <button type="submit">{{ 'Update' if selected_template else 'Create' }} Template</button>
-    </form>
-    <h2>Existing Templates</h2>
-    <ul>
-        {% for template in templates %}
-            <li>{{ template.template_name }} (Prompt: {{ template.template_prompt_name }})
-                <a href="{{ url_for('template.create_template', client_id=selected_client, edit_template=template.id) }}">Edit</a>
-                <form action="{{ url_for('template.create_template_file', template_id=template.id) }}" method="POST" style="display:inline;">
-                    <button type="submit">Create File from Prompt</button>
-                </form>
-                <form action="{{ url_for('template.create_prompt_from_file', template_id=template.id) }}" method="POST" style="display:inline;">
-                    <button type="submit">Create Prompt from File</button>
-                </form>
-                {% if template.has_file %}
-                    <a href="{{ url_for('template.view_template_file', template_id=template.id) }}">View Template File</a>
-                {% endif %}
-            </li>
-        {% endfor %}
-    </ul>
-    <a href="{{ url_for('main.index') }}">Back to Home</a>
-</body>
-</html>
+{% extends "base.html" %}
+{% block title %}Create Template{% endblock %}
+{% block content %}
+<div class="card shadow-sm">
+    <div class="card-body">
+        <h1 class="card-title mb-4">Create Template</h1>
+        <form method="POST" action="{{ url_for('template.create_template') }}" enctype="multipart/form-data">
+            <div class="form-group">
+                <label for="client_id">Client:</label>
+                <select class="form-control" id="client_id" name="client_id">
+                    <option value="">Global</option>
+                    {% for client in clients %}
+                        <option value="{{ client.client_id }}" {% if client.client_id == selected_client %}selected{% endif %}>{{ client.name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="template_name">Template Name:</label>
+                <input type="text" class="form-control" id="template_name" name="template_name" value="{{ templates|selectattr('id', 'equalto', selected_template|int)|map(attribute='template_name')|first if selected_template else '' }}" required>
+            </div>
+            <div class="form-group">
+                <label for="template_prompt_id">Template Prompt:</label>
+                <select class="form-control" id="template_prompt_id" name="template_prompt_id">
+                    <option value="">Select Template Prompt</option>
+                    {% for prompt in prompts %}
+                        <option value="{{ prompt.id }}" {% if prompt.id|string == (templates|selectattr('id', 'equalto', selected_template|int)|map(attribute='template_prompt_id')|first|string) %}selected{% endif %}>{{ prompt.prompt_name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="conversion_prompt_id">Conversion Prompt (Optional):</label>
+                <select class="form-control" id="conversion_prompt_id" name="conversion_prompt_id">
+                    <option value="">None</option>
+                    {% for prompt in conversion_prompts %}
+                        <option value="{{ prompt.id }}" {% if prompt.id|string == (templates|selectattr('id', 'equalto', selected_template|int)|map(attribute='conversion_prompt_id')|first|string) %}selected{% endif %}>{{ prompt.prompt_name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="template_file">Template File (Optional):</label>
+                <input type="file" class="form-control-file" id="template_file" name="template_file" accept=".docx">
+            </div>
+            <button type="submit" class="btn btn-primary mt-3">{{ 'Update' if selected_template else 'Create' }} Template</button>
+        </form>
+        <div class="mt-4">
+            <h2 class="card-title mb-3">Existing Templates</h2>
+            {% if templates %}
+                <ul class="list-group">
+                    {% for template in templates %}
+                        <li class="list-group-item">
+                            {{ template.template_name }} (Prompt: {{ template.template_prompt_name }})
+                            <div class="float-end">
+                                <a href="{{ url_for('template.create_template', edit_template=template.id, client_id=selected_client) }}" class="btn btn-sm btn-outline-primary me-1">Edit</a>
+                                <form action="{{ url_for('template.create_template_file', template_id=template.id) }}" method="POST" class="d-inline">
+                                    <button type="submit" class="btn btn-sm btn-outline-secondary me-1">Create File from Prompt</button>
+                                </form>
+                                <form action="{{ url_for('template.create_prompt_from_file', template_id=template.id) }}" method="POST" class="d-inline">
+                                    <button type="submit" class="btn btn-sm btn-outline-secondary me-1">Create Prompt from File</button>
+                                </form>
+                                {% if template.has_file %}
+                                    <a href="{{ url_for('template.view_template_file', template_id=template.id) }}" class="btn btn-sm btn-outline-info">View Template File</a>
+                                {% endif %}
+                            </div>
+                        </li>
+                    {% endfor %}
+                </ul>
+            {% else %}
+                <p class="text-muted">No templates found.</p>
+            {% endif %}
+        </div>
+        <a href="{{ url_for('main.index') }}" class="btn btn-secondary mt-3">Back to Home</a>
+    </div>
+</div>
+{% endblock %}

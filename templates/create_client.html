@@ -1,70 +1,43 @@
-<script type="text/javascript">
-        var gk_isXlsx = false;
-        var gk_xlsxFileLookup = {};
-        var gk_fileData = {};
-        function filledCell(cell) {
-          return cell !== '' && cell != null;
-        }
-        function loadFileData(filename) {
-        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
-            try {
-                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
-                var firstSheetName = workbook.SheetNames[0];
-                var worksheet = workbook.Sheets[firstSheetName];
-
-                // Convert sheet to JSON to filter blank rows
-                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
-                // Filter out blank rows (rows where all cells are empty, null, or undefined)
-                var filteredData = jsonData.filter(row => row.some(filledCell));
-
-                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
-                var headerRowIndex = filteredData.findIndex((row, index) =>
-                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
-                );
-                // Fallback
-                if (headerRowIndex === -1 || headerRowIndex > 25) {
-                  headerRowIndex = 0;
-                }
-
-                // Convert filtered JSON back to CSV
-                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
-                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
-                return csv;
-            } catch (e) {
-                console.error(e);
-                return "";
-            }
-        }
-        return gk_fileData[filename] || "";
-        }
-        </script><!DOCTYPE html>
-<html>
-<head>
-    <title>Create Client</title>
-</head>
-<body>
-    <h1>Create Client</h1>
-    {% with messages = get_flashed_messages(with_categories=true) %}
-        {% if messages %}
-            {% for category, message in messages %}
-                <div class="alert alert-{{ category }}">{{ message }}</div>
-            {% endfor %}
-        {% endif %}
-    {% endwith %}
-    <form method="POST" action="{{ url_for('client.create_client') }}">
-        <label for="client_id">Client ID:</label>
-        <input type="text" id="client_id" name="client_id" required>
-        <label for="name">Name:</label>
-        <input type="text" id="name" name="name">
-        <input type="hidden" name="action" value="create">
-        <button type="submit">Create Client</button>
-    </form>
-    <h2>Existing Clients</h2>
-    <ul>
-        {% for client in clients %}
-            <li>{{ client.name }} ({{ client.client_id }})</li>
-        {% endfor %}
-    </ul>
-    <a href="{{ url_for('main.index') }}">Back to Home</a>
-</body>
-</html>
+{% extends "base.html" %}
+{% block title %}Create Client{% endblock %}
+{% block content %}
+<div class="card shadow-sm">
+    <div class="card-body">
+        <h1 class="card-title mb-4">Create New Client</h1>
+        <form method="POST" action="{{ url_for('client.create_client') }}">
+            <div class="form-group">
+                <label for="client_id">Client ID:</label>
+                <input type="text" class="form-control" id="client_id" name="client_id" required>
+            </div>
+            <div class="form-group">
+                <label for="client_name">Client Name:</label>
+                <input type="text" class="form-control" id="client_name" name="client_name" required>
+            </div>
+            <div class="form-group">
+                <label for="prompt_name">Initial Prompt Name:</label>
+                <input type="text" class="form-control" id="prompt_name" name="prompt_name">
+                <small class="form-text text-muted">Optional: Name for an initial template prompt for this client.</small>
+            </div>
+            <div class="form-group">
+                <label for="prompt_content">Initial Prompt Content:</label>
+                <textarea class="form-control" id="prompt_content" name="prompt_content" rows="5"></textarea>
+                <small class="form-text text-muted">Optional: Content for the initial template prompt.</small>
+            </div>
+            <button type="submit" class="btn btn-primary mt-3">Create Client</button>
+        </form>
+        <div class="mt-4">
+            <h2 class="card-title mb-3">Existing Clients</h2>
+            {% if clients %}
+                <ul class="list-group">
+                    {% for client in clients %}
+                        <li class="list-group-item">{{ client.name }} ({{ client.client_id }})</li>
+                    {% endfor %}
+                </ul>
+            {% else %}
+                <p class="text-muted">No clients found.</p>
+            {% endif %}
+        </div>
+        <a href="{{ url_for('main.index') }}" class="btn btn-secondary mt-3">Back to Home</a>
+    </div>
+</div>
+{% endblock %}

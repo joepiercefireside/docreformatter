@@ -11,6 +11,14 @@ body {
     margin-right: 10px;
 }
 
+.navbar-nav .nav-link {
+    color: #ffffff !important; /* White text for navbar links */
+}
+
+.navbar-brand {
+    color: #ffffff !important; /* White text for navbar brand */
+}
+
 .card {
     border-radius: 8px; /* Rounded corners */
     background-color: #ffffff; /* White background for contrast */
