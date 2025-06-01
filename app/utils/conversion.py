@@ -12,48 +12,52 @@ def convert_content(content, template_prompt, conversion_prompt):
         "Authorization": f"Bearer {os.environ.get('API_KEY')}",
         "Content-Type": "application/json"
     }
-    prompt = f"""
-You are an AI tasked with reformatting source resume content into a structured JSON object based on a template prompt and optional conversion prompt.
-
-**Template Prompt**: {template_prompt}
-**Conversion Prompt**: {conversion_prompt if conversion_prompt else 'No additional conversion instructions.'}
-**Source Content**: {json.dumps(content, indent=2)}
-
-**Task**:
-1. Semantically analyze the source content, mapping sections to the template's structure (e.g., 'Career Experience' to 'Professional Experience').
-2. Apply the template prompt's instructions for section layout and semantics.
-3. Apply the conversion prompt's instructions (e.g., tone, brevity).
-4. Deduplicate repeated content (e.g., contact info).
-5. Output a JSON object with template sections, content, and a section_order array.
-6. Exclude styling details (handled by the application).
-
-**Output Format**:
-```json
-{
-  "sections": {
-    "name": "String",
-    "contact": "String",
-    "professional summary": "String",
-    "core competencies": ["String", ...],
-    "professional experience": [
-      {
-        "company": "String",
-        "location": "String",
-        "dates": "String",
-        "role": "String",
-        "responsibilities": "String",
-        "achievements": ["String", ...]
-      },
-      ...
-    ],
-    "education": ["String", ...],
-    "professional affiliations": ["String", ...]
-  },
-  "section_order": ["name", "contact", ...],
-  "references": ["String", ...]
-}
-```
-"""
+    
+    # Prepare components to avoid nested f-string expressions
+    conversion_prompt_text = conversion_prompt if conversion_prompt else 'No additional conversion instructions.'
+    source_content_json = json.dumps(content, indent=2)
+    
+    # Construct prompt using string concatenation
+    prompt = (
+        "You are an AI tasked with reformatting source resume content into a structured JSON object based on a template prompt and optional conversion prompt.\n\n"
+        "**Template Prompt**: " + template_prompt + "\n"
+        "**Conversion Prompt**: " + conversion_prompt_text + "\n"
+        "**Source Content**: " + source_content_json + "\n\n"
+        "**Task**:\n"
+        "1. Semantically analyze the source content, mapping sections to the template's structure (e.g., 'Career Experience' to 'Professional Experience').\n"
+        "2. Apply the template prompt's instructions for section layout and semantics.\n"
+        "3. Apply the conversion prompt's instructions (e.g., tone, brevity).\n"
+        "4. Deduplicate repeated content (e.g., contact info).\n"
+        "5. Output a JSON object with template sections, content, and a section_order array.\n"
+        "6. Exclude styling details (handled by the application).\n\n"
+        "**Output Format**:\n"
+        "```json\n"
+        "{\n"
+        "  \"sections\": {\n"
+        "    \"name\": \"String\",\n"
+        "    \"contact\": \"String\",\n"
+        "    \"professional summary\": \"String\",\n"
+        "    \"core competencies\": [\"String\", ...],\n"
+        "    \"professional experience\": [\n"
+        "      {\n"
+        "        \"company\": \"String\",\n"
+        "        \"location\": \"String\",\n"
+        "        \"dates\": \"String\",\n"
+        "        \"role\": \"String\",\n"
+        "        \"responsibilities\": \"String\",\n"
+        "        \"achievements\": [\"String\", ...]\n"
+        "      },\n"
+        "      ...\n"
+        "    ],\n"
+        "    \"education\": [\"String\", ...],\n"
+        "    \"professional affiliations\": [\"String\", ...]\n"
+        "  },\n"
+        "  \"section_order\": [\"name\", \"contact\", ...],\n"
+        "  \"references\": [\"String\", ...]\n"
+        "}\n"
+        "```"
+    )
+    
     payload = {
         "model": "gpt-4o",
         "messages": [
@@ -64,6 +68,7 @@ You are an AI tasked with reformatting source resume content into a structured J
         "temperature": 0.7,
         "response_format": {"type": "json_object"}
     }
+    
     session = requests.Session()
     retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
     session.mount('https://', HTTPAdapter(max_retries=retries))
