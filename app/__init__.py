@@ -23,7 +23,7 @@ def create_app():
     app.config['GOOGLE_CLIENT_SECRET'] = os.environ.get('GOOGLE_CLIENT_SECRET')
     app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL')
 
-    logger.debug("Initializing Flask app with static_folder=../../static")
+    logger.debug("Initializing Flask app with static_folder=../static")
 
     login_manager = LoginManager()
     login_manager.init_app(app)
