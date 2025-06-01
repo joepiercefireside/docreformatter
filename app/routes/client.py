@@ -41,7 +41,7 @@ def create_client():
         templates = get_templates_for_client(selected_client, current_user.id)
         # Fetch all prompts (template and conversion)
         cur.execute(
-            "SELECT id, prompt_name, prompt_type, content "
+            "SELECT p.id, p.prompt_name, p.prompt_type, p.content "
             "FROM prompts p LEFT JOIN clients c ON p.client_id = c.id "
             "WHERE p.user_id = %s AND (c.client_id = %s OR p.client_id IS NULL)",
             (current_user.id, selected_client)
