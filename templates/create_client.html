@@ -1,42 +1,78 @@
 {% extends "base.html" %}
-{% block title %}Create Client{% endblock %}
+{% block title %}Create Client - AI Document Converter{% endblock %}
 {% block content %}
 <div class="card shadow-sm">
     <div class="card-body">
-        <h1 class="card-title mb-4">Create New Client</h1>
-        <form method="POST" action="{{ url_for('client.create_client') }}">
-            <div class="form-group">
-                <label for="client_id">Client ID:</label>
-                <input type="text" class="form-control" id="client_id" name="client_id" required>
-            </div>
-            <div class="form-group">
-                <label for="client_name">Client Name:</label>
-                <input type="text" class="form-control" id="client_name" name="client_name" required>
-            </div>
-            <div class="form-group">
-                <label for="prompt_name">Initial Prompt Name:</label>
-                <input type="text" class="form-control" id="prompt_name" name="prompt_name">
-                <small class="form-text text-muted">Optional: Name for an initial template prompt for this client.</small>
-            </div>
-            <div class="form-group">
-                <label for="prompt_content">Initial Prompt Content:</label>
-                <textarea class="form-control" id="prompt_content" name="prompt_content" rows="5"></textarea>
-                <small class="form-text text-muted">Optional: Content for the initial template prompt.</small>
-            </div>
-            <button type="submit" class="btn btn-primary mt-3">Create Client</button>
-        </form>
-        <div class="mt-4">
-            <h2 class="card-title mb-3">Existing Clients</h2>
-            {% if clients %}
-                <ul class="list-group">
-                    {% for client in clients %}
-                        <li class="list-group-item">{{ client.name }} ({{ client.client_id }})</li>
-                    {% endfor %}
-                </ul>
-            {% else %}
-                <p class="text-muted">No clients found.</p>
-            {% endif %}
+        <h1 class="card-title mb-4">Manage Clients</h1>
+        <div class="form-group">
+            <label for="selected_client">Select Client:</label>
+            <select class="form-control" id="selected_client" name="selected_client" onchange="this.form.submit()">
+                <option value="">Create a New Client</option>
+                {% for client in clients %}
+                    <option value="{{ client.client_id }}" {% if client.client_id == selected_client %}selected{% endif %}>{{ client.name }} ({{ client.client_id }})</option>
+                {% endfor %}
+            </select>
         </div>
+        <form method="POST" action="{{ url_for('client.create_client') }}">
+            <input type="hidden" name="selected_client" value="{{ selected_client }}">
+            {% if not selected_client %}
+                <div class="form-group">
+                    <label for="client_id">Client ID:</label>
+                    <input type="text" class="form-control" id="client_id" name="client_id" required>
+                </div>
+                <div class="form-group">
+                    <label for="client_name">Client Name:</label>
+                    <input type="text" class="form-control" id="client_name" name="client_name" required>
+                </div>
+                <div class="form-group">
+                    <label for="prompt_name">Initial Prompt Name:</label>
+                    <input type="text" class="form-control" id="prompt_name" name="prompt_name">
+                    <small class="form-text text-muted">Optional: Name for an initial template prompt for this client.</small>
+                </div>
+                <div class="form-group">
+                    <label for="prompt_content">Initial Prompt Content:</label>
+                    <textarea class="form-control" id="prompt_content" name="prompt_content" rows="5"></textarea>
+                    <small class="form-text text-muted">Optional: Content for the initial template prompt.</small>
+                </div>
+                <button type="submit" name="create" class="btn btn-primary mt-3">Create Client</button>
+            {% else %}
+                <div class="mt-3">
+                    <form action="{{ url_for('client.delete_client', client_id=selected_client) }}" method="POST" class="d-inline">
+                        <button type="submit" class="btn btn-danger" onclick="return confirm('Are you sure you want to delete this client?');">Delete Client</button>
+                    </form>
+                </div>
+                <div class="mt-4">
+                    <h2 class="card-title mb-3">Templates for {{ clients|selectattr('client_id', 'equalto', selected_client)|map(attribute='name')|first }}</h2>
+                    {% if templates %}
+                        <ul class="list-group">
+                            {% for template in templates %}
+                                <li class="list-group-item">
+                                    {{ template.template_name }} (Prompt: {{ template.template_prompt_name }})
+                                    <a href="{{ url_for('template.create_template', edit_template=template.id, client_id=selected_client) }}" class="btn btn-sm btn-outline-primary float-end">Edit</a>
+                                </li>
+                            {% endfor %}
+                        </ul>
+                    {% else %}
+                        <p class="text-muted">No templates found.</p>
+                    {% endif %}
+                </div>
+                <div class="mt-4">
+                    <h2 class="card-title mb-3">Prompts for {{ clients|selectattr('client_id', 'equalto', selected_client)|map(attribute='name')|first }}</h2>
+                    {% if prompts %}
+                        <ul class="list-group">
+                            {% for prompt in prompts %}
+                                <li class="list-group-item">
+                                    {{ prompt.prompt_name }} ({{ prompt.prompt_type }})
+                                    <a href="{{ url_for('prompt.create_prompt', edit_prompt=prompt.id, client_id=selected_client) }}" class="btn btn-sm btn-outline-primary float-end">Edit</a>
+                                </li>
+                            {% endfor %}
+                        </ul>
+                    {% else %}
+                        <p class="text-muted">No prompts found.</p>
+                    {% endif %}
+                </div>
+            {% endif %}
+        </form>
         <a href="{{ url_for('main.index') }}" class="btn btn-secondary mt-3">Back to Home</a>
     </div>
 </div>
