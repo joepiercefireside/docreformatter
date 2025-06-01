@@ -3,12 +3,13 @@ from flask_login import LoginManager
 from authlib.integrations.flask_client import OAuth
 import os
 import logging
-from .utils import init_db  # Updated import
+from .utils import init_db
 from .routes.auth import auth_bp
 from .routes.client import client_bp
 from .routes.prompt import prompt_bp
 from .routes.template import template_bp
 from .routes.main import main_bp
+from .models.user import load_user  # Added import
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -27,6 +28,7 @@ def create_app():
     login_manager = LoginManager()
     login_manager.init_app(app)
     login_manager.login_view = 'auth.login'
+    login_manager.user_loader(load_user)  # Register user_loader
 
     oauth = OAuth(app)
     oauth.register(
