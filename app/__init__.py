@@ -15,7 +15,7 @@ logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 def create_app():
-    app = Flask(__name__, template_folder='../../templates', static_folder='../../static')
+    app = Flask(__name__, template_folder='../templates', static_folder='../static')
     app.config['UPLOAD_FOLDER'] = '/tmp'
     app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
     app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'your-secret-key')
