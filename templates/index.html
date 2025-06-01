@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Document Reformatter{% endblock %}
+{% block title %}Document Reformatter - AI Document Converter{% endblock %}
 {% block content %}
 <div class="card shadow-sm">
     <div class="card-body">
@@ -32,7 +32,7 @@
                         </select>
                     </div>
                     <div class="form-group">
-                        <label for="conversion_prompt_id">Select Conversion Prompt:</label>
+                        <label for="conversion_prompt_id">Select Conversion Prompt (Optional):</label>
                         <select class="form-control" id="conversion_prompt_id" name="conversion_prompt_id" onchange="updatePromptContent()">
                             <option value="">None</option>
                             {% for prompt in conversion_prompts %}
@@ -48,12 +48,12 @@
                 </div>
                 <div class="col-md-6">
                     <div class="form-group">
-                        <label>Template Prompt Content</label>
+                        <label>Template Prompt Content (Loaded from Selected Template)</label>
                         <div class="card">
                             <div class="card-body">
-                                <h5 class="card-title">Template Prompt for This Conversion:</h5>
-                                <textarea class="form-control" id="template_prompt" name="template_prompt" rows="10">{{ template_prompt }}</textarea>
-                                <small class="form-text text-muted">This prompt is based on the selected template.</small>
+                                <h5 class="card-title">Template Prompt:</h5>
+                                <textarea class="form-control" id="template_prompt" name="template_prompt" rows="10" readonly>{{ template_prompt }}</textarea>
+                                <small class="form-text text-muted">This defines the layout, sections, and semantics of the output document.</small>
                             </div>
                         </div>
                     </div>
@@ -61,9 +61,9 @@
                         <label>Conversion Prompt Content (Optional)</label>
                         <div class="card">
                             <div class="card-body">
-                                <h5 class="card-title">Conversion Prompt for This Conversion:</h5>
+                                <h5 class="card-title">Conversion Prompt:</h5>
                                 <textarea class="form-control" id="conversion_prompt" name="conversion_prompt" rows="10">{{ conversion_prompt }}</textarea>
-                                <small class="form-text text-muted">This prompt is based on the selected conversion prompt, if any.</small>
+                                <small class="form-text text-muted">This provides additional instructions (e.g., tone, brevity) for the conversion.</small>
                             </div>
                         </div>
                     </div>

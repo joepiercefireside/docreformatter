@@ -1,10 +1,9 @@
-from flask import Blueprint, render_template, request, redirect, url_for, flash, session, send_file
+from flask import Blueprint, render_template, request, redirect, url_for, flash, Response
 from flask_login import login_required, current_user
 from ..utils.database import get_db_connection, get_user_clients, get_templates_for_client, get_conversion_prompts_for_client
 from ..utils.document import process_docx, process_text_input
 from ..utils.conversion import convert_content
 from ..utils.docx_builder import create_reformatted_docx
-from tempfile import TemporaryDirectory
 import json
 
 main_bp = Blueprint('main', __name__)
@@ -13,104 +12,140 @@ main_bp = Blueprint('main', __name__)
 @login_required
 def index():
     clients = get_user_clients(current_user.id)
-    selected_client = session.get('selected_client', '')
-    selected_template = session.get('selected_template', '')
-    template_prompt = session.get('template_prompt', '')
-    conversion_prompt = session.get('conversion_prompt', '')
-    converted_content = session.get('converted_content', None)
-
+    selected_client = request.args.get('client_id', '') if request.method == 'GET' else request.form.get('client', '')
     templates = get_templates_for_client(selected_client, current_user.id)
     conversion_prompts = get_conversion_prompts_for_client(selected_client, current_user.id)
 
+    template_prompt = ''
+    conversion_prompt = ''
+    converted_content = None
+    selected_template = ''
+    conversion_prompt_id = ''
+    output_file = None
+
     if request.method == 'POST':
         action = request.form.get('action')
-        selected_client = request.form.get('client', '').strip()
-        selected_template = request.form.get('template', '').strip()
-        template_prompt = request.form.get('template_prompt', '').strip()
-        conversion_prompt = request.form.get('conversion_prompt', '').strip()
-        source_file = request.files.get('source_file')
-        source_text = request.form.get('source_text', '').strip()
+        selected_template = request.form.get('template', '')
+        template_prompt = request.form.get('template_prompt', '')
+        conversion_prompt = request.form.get('conversion_prompt', '')
+        conversion_prompt_id = request.form.get('conversion_prompt_id', '')
 
-        session['selected_client'] = selected_client
-        session['selected_template'] = selected_template
-        session['template_prompt'] = template_prompt
-        session['conversion_prompt'] = conversion_prompt
+        if action == 'select_client':
+            return redirect(url_for('main.index', client_id=selected_client))
 
-        if action == 'convert':
+        elif action == 'convert':
             if not selected_template:
-                flash('Template is required', 'danger')
-                return redirect(url_for('main.index'))
+                flash('Please select a template', 'danger')
+                return redirect(url_for('main.index', client_id=selected_client))
             if not template_prompt:
                 flash('Template prompt is required', 'danger')
-                return redirect(url_for('main.index'))
-            try:
-                conn = get_db_connection()
-                cur = conn.cursor()
-                client_id_value = None
-                if selected_client:
-                    cur.execute("SELECT id FROM clients WHERE user_id = %s AND client_id = %s", (current_user.id, selected_client))
-                    client = cur.fetchone()
-                    if client:
-                        client_id_value = client[0]
-                cur.execute(
-                    "SELECT template_file "
-                    "FROM templates t "
-                    "WHERE t.user_id = %s AND (t.client_id = %s OR %s IS NULL AND t.client_id IS NULL) AND t.id = %s",
-                    (current_user.id, client_id_value, client_id_value, int(selected_template))
-                )
-                template = cur.fetchone()
-                cur.close()
-                conn.close()
-                if not template:
-                    flash('Template not found', 'danger')
-                    return redirect(url_for('main.index'))
+                return redirect(url_for('main.index', client_id=selected_client))
 
-                template_file = template[0]
-                with TemporaryDirectory() as temp_dir:
-                    temp_template_path = os.path.join(temp_dir, 'template.docx')
-                    if template_file:
-                        with open(temp_template_path, 'wb') as f:
-                            f.write(template_file)
-                    content = process_docx(source_file) if source_file and source_file.filename.endswith('.docx') else process_text_input(source_text)
-                    converted_content = convert_content(content, template_prompt, conversion_prompt)
-                    session['converted_content'] = converted_content
-                    output_path = os.path.join(temp_dir, 'reformatted_document.docx')
-                    create_reformatted_docx(converted_content, output_path, temp_template_path)
-                    return send_file(output_path, as_attachment=True, download_name='reformatted_document.docx')
-            except Exception as e:
-                flash(f'Error processing document: {str(e)}', 'error')
-                return redirect(url_for('main.index'))
+            # Get template file for styling
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT template_file FROM templates WHERE id = %s AND user_id = %s",
+                (selected_template, current_user.id)
+            )
+            template_file = cur.fetchone()[0]
+            cur.close()
+            conn.close()
 
-        elif action == 'accept':
-            session.pop('selected_client', None)
-            session.pop('selected_template', None)
-            session.pop('template_prompt', None)
-            session.pop('conversion_prompt', None)
-            session.pop('converted_content', None)
-            flash('Conversion accepted', 'success')
-            return redirect(url_for('main.index'))
+            # Process source content
+            source_file = request.files.get('source_file')
+            if source_file and source_file.filename.endswith('.docx'):
+                content = process_docx(source_file)
+            else:
+                flash('Please upload a valid .docx file', 'danger')
+                return redirect(url_for('main.index', client_id=selected_client))
 
-        elif action == 'make_changes':
+            # Step 1: Semantic structuring with LLM
+            converted_content = convert_content(content, template_prompt, conversion_prompt)
+
+            # Step 2: Apply styles with python-docx
+            output_file = create_reformatted_docx(converted_content, template_file)
+
+            # Store in session or pass to template for "Make Changes"
             return render_template(
                 'index.html',
                 clients=clients,
+                selected_client=selected_client,
                 templates=templates,
                 conversion_prompts=conversion_prompts,
-                selected_client=selected_client,
-                selected_template=selected_template,
                 template_prompt=template_prompt,
                 conversion_prompt=conversion_prompt,
-                converted_content=converted_content
+                converted_content=converted_content,
+                selected_template=selected_template,
+                conversion_prompt_id=conversion_prompt_id,
+                output_file=output_file
             )
+
+        elif action == 'accept':
+            if 'output_file' in request.form:
+                output_file = BytesIO(request.form['output_file'].encode('latin1'))
+                return Response(
+                    output_file.getvalue(),
+                    mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                    headers={'Content-Disposition': 'attachment; filename=reformatted_document.docx'}
+                )
+            return redirect(url_for('main.index', client_id=selected_client))
+
+        elif action == 'make_changes':
+            # Already rendered with converted_content and form fields
+            pass
 
     return render_template(
         'index.html',
         clients=clients,
+        selected_client=selected_client,
         templates=templates,
         conversion_prompts=conversion_prompts,
-        selected_client=selected_client,
-        selected_template=selected_template,
         template_prompt=template_prompt,
         conversion_prompt=conversion_prompt,
-        converted_content=converted_content
+        converted_content=converted_content,
+        selected_template=selected_template,
+        conversion_prompt_id=conversion_prompt_id,
+        output_file=output_file
     )
+
+@main_bp.route('/load_client', methods=['POST'])
+def load_client():
+    client_id = request.form.get('client_id', '')
+    template_id = request.form.get('template_id', '')
+    prompt_id = request.form.get('prompt_id', '')
+
+    if template_id:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT p.content AS template_prompt, cp.content AS conversion_prompt "
+            "FROM templates t "
+            "JOIN prompts p ON t.template_prompt_id = p.id "
+            "LEFT JOIN template_prompt_associations tpa ON t.id = tpa.template_id "
+            "LEFT JOIN prompts cp ON tpa.conversion_prompt_id = cp.id "
+            "WHERE t.id = %s AND t.user_id = %s",
+            (template_id, current_user.id)
+        )
+        result = cur.fetchone()
+        cur.close()
+        conn.close()
+        if result:
+            return {'prompt': result[0], 'conversion': result[1] if result[1] else ''}
+        return {'prompt': '', 'conversion': ''}
+
+    if prompt_id:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT content FROM prompts WHERE id = %s AND user_id = %s",
+            (prompt_id, current_user.id)
+        )
+        result = cur.fetchone()
+        cur.close()
+        conn.close()
+        if result:
+            return {'prompt': result[0]}
+        return {'prompt': ''}
+
+    return {'prompt': '', 'conversion': ''}

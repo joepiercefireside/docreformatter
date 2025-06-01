@@ -7,7 +7,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-def convert_content(content, template_prompt, conversion_prompt):
+def convert_content(content, template_prompt, conversion_prompt=None):
     headers = {
         "Authorization": f"Bearer {os.environ.get('API_KEY')}",
         "Content-Type": "application/json"
@@ -17,19 +17,21 @@ def convert_content(content, template_prompt, conversion_prompt):
     conversion_prompt_text = conversion_prompt if conversion_prompt else 'No additional conversion instructions.'
     source_content_json = json.dumps(content, indent=2)
     
-    # Construct prompt using string concatenation
+    # Construct prompt for semantic structuring
     prompt = (
-        "You are an AI tasked with reformatting source resume content into a structured JSON object based on a template prompt and optional conversion prompt.\n\n"
-        "**Template Prompt**: " + template_prompt + "\n"
-        "**Conversion Prompt**: " + conversion_prompt_text + "\n"
+        "You are an AI tasked with reformatting source resume content into a structured JSON object based on a template prompt and an optional conversion prompt. "
+        "Focus on semantic understanding and structuring the content into sections as defined by the template prompt, without applying any styling (e.g., fonts, colors). "
+        "Use the conversion prompt to adjust tone, brevity, or other content instructions if provided.\n\n"
+        "**Template Prompt**: " + template_prompt + "\n\n"
+        "**Conversion Prompt**: " + conversion_prompt_text + "\n\n"
         "**Source Content**: " + source_content_json + "\n\n"
         "**Task**:\n"
         "1. Semantically analyze the source content, mapping sections to the template's structure (e.g., 'Career Experience' to 'Professional Experience').\n"
-        "2. Apply the template prompt's instructions for section layout and semantics.\n"
-        "3. Apply the conversion prompt's instructions (e.g., tone, brevity).\n"
+        "2. Apply the template prompt's instructions for section layout and semantics (e.g., what each section should contain).\n"
+        "3. Apply the conversion prompt's instructions (e.g., tone, brevity) if provided.\n"
         "4. Deduplicate repeated content (e.g., contact info).\n"
         "5. Output a JSON object with template sections, content, and a section_order array.\n"
-        "6. Exclude styling details (handled by the application).\n\n"
+        "6. Do NOT include styling details (e.g., fonts, colors); styling will be applied later.\n\n"
         "**Output Format**:\n"
         "```json\n"
         "{\n"
@@ -55,14 +57,14 @@ def convert_content(content, template_prompt, conversion_prompt):
         "  \"section_order\": [\"name\", \"contact\", ...],\n"
         "  \"references\": [\"String\", ...]\n"
         "}\n"
-        "```"
+        "```\n"
     )
     
     payload = {
         "model": "gpt-4o",
         "messages": [
             {"role": "system", "content": prompt},
-            {"role": "user", "content": "Convert the source content."}
+            {"role": "user", "content": "Convert the source content into the specified structure."}
         ],
         "max_tokens": 4096,
         "temperature": 0.7,
