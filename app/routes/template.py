@@ -21,10 +21,12 @@ template_bp = Blueprint('template', __name__)
 @login_required
 def create_template():
     clients = get_user_clients(current_user.id)
-    selected_client = request.args.get('client_id', '')
+    selected_client = request.args.get('client_id', '') if request.method == 'GET' else request.form.get('client_id', '')
     edit_template = request.args.get('edit_template', '')
+    reset_form = request.args.get('reset_form', 'false') == 'true' or not edit_template
     templates = []
     prompts = []
+    conversion_prompts = []
 
     conn = get_db_connection()
     cur = conn.cursor()
@@ -37,7 +39,9 @@ def create_template():
         )
     else:
         cur.execute(
-            "SELECT id, prompt_name, prompt_type, content FROM prompts WHERE user_id = %s AND client_id IS NULL AND prompt_type = 'template'",
+            "SELECT p.id, p.prompt_name, p.prompt_type, p.content "
+            "FROM prompts p "
+            "WHERE p.user_id = %s AND p.client_id IS NULL AND p.prompt_type = 'template'",
             (current_user.id,)
         )
     prompts = [{'id': row[0], 'prompt_name': row[1], 'prompt_type': row[2], 'content': row[3]} for row in cur.fetchall()]
@@ -162,10 +166,15 @@ def create_template():
                 return redirect(url_for('template.create_template', client_id=client_id))
 
     templates = get_templates_for_client(selected_client, current_user.id)
+    filtered_templates = [
+        template for template in templates
+        if (selected_client and (template['client_id'] is None or template['client_id'] == selected_client)) or
+           (not selected_client and template['client_id'] is None)
+    ]
     cur.close()
     conn.close()
 
-    return render_template('create_template.html', clients=clients, selected_client=selected_client, templates=templates, prompts=prompts, selected_template=edit_template)
+    return render_template('create_template.html', clients=clients, selected_client=selected_client, templates=filtered_templates, prompts=prompts, selected_template=edit_template if not reset_form else None)
 
 @template_bp.route('/create_template_file/<int:template_id>', methods=['POST'])
 @login_required
@@ -193,12 +202,12 @@ def create_template_file(template_id):
             "Content-Type": "application/json"
         }
         
-        # Construct prompt using string concatenation to avoid nested f-strings
+        # Construct prompt for LLM to generate .docx structure
         system_prompt = (
-            "Given the following template prompt, generate a JSON object describing a .docx file structure, "
-            "including sections, content placeholders, and styling (font, size, bold, color in RGB, alignment, spacing). "
-            "Use the prompt to infer the document's layout and semantics.\n\n"
-            "**Prompt**: " + prompt_content + "\n\n"
+            "You are an AI tasked with generating a JSON object describing a .docx file structure based on a template prompt. "
+            "The structure should include sections, content placeholders, and styling (font, size, bold, color in RGB, alignment, spacing, etc.). "
+            "Use the prompt to infer the document's layout, sections, and semantic understanding of what each section should contain.\n\n"
+            "**Template Prompt**: " + prompt_content + "\n\n"
             "**Output Format**:\n"
             "```json\n"
             "{\n"
@@ -227,9 +236,9 @@ def create_template_file(template_id):
             "model": "gpt-4o",
             "messages": [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": "Generate the .docx structure."}
+                {"role": "user", "content": "Generate the .docx structure based on the template prompt."}
             ],
-            "max_tokens": 1000,
+            "max_tokens": 1500,
             "temperature": 0.7
         }
         
@@ -243,6 +252,7 @@ def create_template_file(template_id):
             raise ValueError("No response from AI")
         doc_structure = json.loads(data["choices"][0]["message"]["content"])
 
+        # Generate .docx file using python-docx
         for section in doc_structure.get("sections", []):
             style = section.get("style", {})
             para = doc.add_paragraph(section["header"])
@@ -304,7 +314,7 @@ def create_template_file(template_id):
             (file_data, template_id, current_user.id)
         )
         conn.commit()
-        flash('Template file created successfully', 'success')
+        flash('Template file created successfully from prompt', 'success')
         cur.close()
         conn.close()
         return redirect(url_for('template.create_template'))
@@ -369,10 +379,13 @@ def create_prompt_from_file(template_id):
             elif current_section:
                 sections[-1]["content"].append(text)
 
-        prompt_content = "Generate a resume with the following sections and styling:\n\n"
+        prompt_content = (
+            "This is a template prompt for generating a document with the following structure and styling:\n\n"
+            "The document should have the following sections, each with specific styling and semantic purposes:\n\n"
+        )
         for section in sections:
             prompt_content += f"**Section: {section['header']}**\n"
-            prompt_content += f"- **Purpose**: {section['header'].lower().replace(' ', '_')} content (e.g., professional experience includes job roles, responsibilities, achievements).\n"
+            prompt_content += f"- **Purpose**: This section represents {section['header'].lower().replace(' ', '_')} content (e.g., if the section is 'Professional Experience', it should contain job roles, responsibilities, achievements).\n"
             prompt_content += "- **Style**:\n"
             prompt_content += f"  - Font: {section['style']['font']}\n"
             prompt_content += f"  - Size: {section['style']['size_pt']}pt\n"
@@ -382,7 +395,7 @@ def create_prompt_from_file(template_id):
             prompt_content += f"  - Spacing Before: {section['style']['spacing_before_pt']}pt\n"
             prompt_content += f"  - Spacing After: {section['style']['spacing_after_pt']}pt\n"
             prompt_content += f"  - Horizontal List: {section['style']['is_horizontal_list']}\n"
-            prompt_content += f"- **Content**: {', '.join(section['content']) if section['content'] else 'Placeholder for relevant content'}\n\n"
+            prompt_content += f"- **Content Placeholder**: {', '.join(section['content']) if section['content'] else 'Placeholder for relevant content'}\n\n"
 
         prompt_name = f"{template_name}_auto_prompt"
         cur.execute(
@@ -393,7 +406,7 @@ def create_prompt_from_file(template_id):
             prompt_name = f"{prompt_name}_{secrets.token_hex(4)}"
         cur.execute(
             "INSERT INTO prompts (user_id, client_id, prompt_name, prompt_type, content) VALUES (%s, %s, %s, 'template', %s) RETURNING id",
-            (current_user.id, client_id, prompt_name, prompt_content)
+            (current_user.id, client_id, prompt_name, 'template', prompt_content)
         )
         new_prompt_id = cur.fetchone()[0]
         cur.execute(
@@ -401,7 +414,7 @@ def create_prompt_from_file(template_id):
             (new_prompt_id, template_id)
         )
         conn.commit()
-        flash(f'Template prompt "{prompt_name}" created successfully', 'success')
+        flash(f'Template prompt "{prompt_name}" created successfully from file', 'success')
         cur.close()
         conn.close()
         return redirect(url_for('template.create_template'))
@@ -438,3 +451,24 @@ def view_template_file(template_id):
     except Exception as e:
         flash(f'Failed to view template file: {str(e)}', 'danger')
         return redirect(url_for('template.create_template'))
+
+@template_bp.route('/delete_template/<int:template_id>', methods=['POST'])
+@login_required
+def delete_template(template_id):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM templates WHERE user_id = %s AND id = %s",
+            (current_user.id, template_id)
+        )
+        if cur.rowcount == 0:
+            flash(f'Template not found', 'danger')
+        else:
+            flash(f'Template deleted successfully', 'success')
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        flash(f'Failed to delete template: {str(e)}', 'danger')
+    return redirect(url_for('template.create_template'))

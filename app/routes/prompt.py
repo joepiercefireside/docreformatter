@@ -10,12 +10,13 @@ def create_prompt():
     clients = get_user_clients(current_user.id)
     selected_client = request.args.get('client_id', '') if request.method == 'GET' else request.form.get('client_id', '')
     edit_prompt = request.args.get('edit_prompt', '')
+    reset_form = request.args.get('reset_form', 'false') == 'true' or not edit_prompt
     prompts = []
 
     conn = get_db_connection()
     cur = conn.cursor()
     if selected_client:
-        # Fetch prompts for the selected client, including both template and conversion types
+        # Fetch prompts for the selected client, including global prompts
         cur.execute(
             "SELECT p.id, p.prompt_name, p.prompt_type, p.content "
             "FROM prompts p LEFT JOIN clients c ON p.client_id = c.id "
@@ -23,7 +24,7 @@ def create_prompt():
             (current_user.id, selected_client)
         )
     else:
-        # Fetch global prompts
+        # Fetch global prompts only
         cur.execute(
             "SELECT p.id, p.prompt_name, p.prompt_type, p.content "
             "FROM prompts p "
@@ -31,6 +32,12 @@ def create_prompt():
             (current_user.id,)
         )
     prompts = [{'id': row[0], 'prompt_name': row[1], 'prompt_type': row[2], 'content': row[3]} for row in cur.fetchall()]
+    # Filter prompts to ensure they match the selected client or are global
+    filtered_prompts = [
+        prompt for prompt in prompts
+        if (selected_client and (prompt['client_id'] is None or prompt['client_id'] == selected_client)) or
+           (not selected_client and prompt['client_id'] is None)
+    ]
 
     if request.method == 'POST':
         action = request.form.get('action')
@@ -135,4 +142,25 @@ def create_prompt():
     cur.close()
     conn.close()
 
-    return render_template('create_prompt.html', clients=clients, selected_client=selected_client, prompts=prompts, selected_prompt=edit_prompt)
+    return render_template('create_prompt.html', clients=clients, selected_client=selected_client, prompts=filtered_prompts, selected_prompt=edit_prompt if not reset_form else None)
+
+@prompt_bp.route('/delete_prompt/<int:prompt_id>', methods=['POST'])
+@login_required
+def delete_prompt(prompt_id):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM prompts WHERE user_id = %s AND id = %s",
+            (current_user.id, prompt_id)
+        )
+        if cur.rowcount == 0:
+            flash(f'Prompt not found', 'danger')
+        else:
+            flash(f'Prompt deleted successfully', 'success')
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        flash(f'Failed to delete prompt: {str(e)}', 'danger')
+    return redirect(url_for('prompt.create_prompt'))
