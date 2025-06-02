@@ -18,7 +18,7 @@ def create_prompt():
     if selected_client:
         # Fetch prompts for the selected client, including global prompts
         cur.execute(
-            "SELECT p.id, p.prompt_name, p.prompt_type, p.content "
+            "SELECT p.id, p.prompt_name, p.prompt_type, p.content, c.client_id "
             "FROM prompts p LEFT JOIN clients c ON p.client_id = c.id "
             "WHERE p.user_id = %s AND (c.client_id = %s OR p.client_id IS NULL)",
             (current_user.id, selected_client)
@@ -26,12 +26,20 @@ def create_prompt():
     else:
         # Fetch global prompts only
         cur.execute(
-            "SELECT p.id, p.prompt_name, p.prompt_type, p.content "
-            "FROM prompts p "
+            "SELECT p.id, p.prompt_name, p.prompt_type, p.content, c.client_id "
+            "FROM prompts p LEFT JOIN clients c ON p.client_id = c.id "
             "WHERE p.user_id = %s AND p.client_id IS NULL",
             (current_user.id,)
         )
-    prompts = [{'id': row[0], 'prompt_name': row[1], 'prompt_type': row[2], 'content': row[3]} for row in cur.fetchall()]
+    prompts = [
+        {
+            'id': row[0],
+            'prompt_name': row[1],
+            'prompt_type': row[2],
+            'content': row[3],
+            'client_id': row[4]
+        } for row in cur.fetchall()
+    ]
     # Filter prompts to ensure they match the selected client or are global
     filtered_prompts = [
         prompt for prompt in prompts
