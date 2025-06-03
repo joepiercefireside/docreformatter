@@ -6,6 +6,9 @@ from ..utils.conversion import convert_content
 from ..utils.docx_builder import create_reformatted_docx
 import json
 from io import BytesIO
+import logging
+
+logger = logging.getLogger(__name__)
 
 main_bp = Blueprint('main', __name__)
 
@@ -19,10 +22,8 @@ def index():
 
     template_prompt = ''
     conversion_prompt = ''
-    converted_content = None
     selected_template = ''
     conversion_prompt_id = ''
-    output_file = None
 
     # Filter templates and conversion prompts for the selected client
     filtered_templates = [
@@ -54,59 +55,47 @@ def index():
                 flash('Template prompt is required', 'danger')
                 return redirect(url_for('main.index', client_id=selected_client))
 
-            # Get template file for styling
-            conn = get_db_connection()
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT template_file FROM templates WHERE id = %s AND user_id = %s",
-                (selected_template, current_user.id)
-            )
-            template_file = cur.fetchone()[0]
-            cur.close()
-            conn.close()
+            try:
+                # Get template file for styling
+                conn = get_db_connection()
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT template_file FROM templates WHERE id = %s AND user_id = %s",
+                    (selected_template, current_user.id)
+                )
+                template_file = cur.fetchone()[0]
+                cur.close()
+                conn.close()
 
-            # Process source content
-            source_file = request.files.get('source_file')
-            if source_file and source_file.filename.endswith('.docx'):
-                content = process_docx(source_file)
-            else:
-                flash('Please upload a valid .docx file', 'danger')
-                return redirect(url_for('main.index', client_id=selected_client))
+                if not template_file:
+                    flash('Template file not found. Please ensure the selected template has an associated file.', 'danger')
+                    return redirect(url_for('main.index', client_id=selected_client))
 
-            # Step 1: Semantic structuring with LLM
-            converted_content = convert_content(content, template_prompt, conversion_prompt)
+                logger.info(f"Using template file for template ID {selected_template} (length: {len(template_file)} bytes)")
 
-            # Step 2: Apply styles with python-docx
-            output_file = create_reformatted_docx(converted_content, template_file)
+                # Process source content
+                source_file = request.files.get('source_file')
+                if source_file and source_file.filename.endswith('.docx'):
+                    content = process_docx(source_file)
+                else:
+                    flash('Please upload a valid .docx file', 'danger')
+                    return redirect(url_for('main.index', client_id=selected_client))
 
-            # Store in session or pass to template for "Make Changes"
-            return render_template(
-                'index.html',
-                clients=clients,
-                selected_client=selected_client,
-                templates=filtered_templates,
-                conversion_prompts=filtered_conversion_prompts,
-                template_prompt=template_prompt,
-                conversion_prompt=conversion_prompt,
-                converted_content=converted_content,
-                selected_template=selected_template,
-                conversion_prompt_id=conversion_prompt_id,
-                output_file=output_file
-            )
+                # Step 1: Semantic structuring with LLM
+                converted_content = convert_content(content, template_prompt, conversion_prompt)
 
-        elif action == 'accept':
-            if 'output_file' in request.form:
-                output_file = BytesIO(request.form['output_file'].encode('latin1'))
+                # Step 2: Apply styles with python-docx
+                output_file = create_reformatted_docx(converted_content, template_file)
+
+                # Return the file for immediate download
                 return Response(
-                    output_file.getvalue(),
+                    output_file,
                     mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
                     headers={'Content-Disposition': 'attachment; filename=reformatted_document.docx'}
                 )
-            return redirect(url_for('main.index', client_id=selected_client))
-
-        elif action == 'make_changes':
-            # Already rendered with converted_content and form fields
-            pass
+            except Exception as e:
+                flash(str(e), 'danger')
+                return redirect(url_for('main.index', client_id=selected_client))
 
     return render_template(
         'index.html',
@@ -116,10 +105,8 @@ def index():
         conversion_prompts=filtered_conversion_prompts,
         template_prompt=template_prompt,
         conversion_prompt=conversion_prompt,
-        converted_content=converted_content,
         selected_template=selected_template,
-        conversion_prompt_id=conversion_prompt_id,
-        output_file=output_file
+        conversion_prompt_id=conversion_prompt_id
     )
 
 @main_bp.route('/load_client', methods=['POST'])

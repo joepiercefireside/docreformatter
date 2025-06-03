@@ -88,6 +88,10 @@ def create_template():
                     conn.close()
                     return redirect(url_for('template.create_template', client_id=client_id))
                 file_data = template_file.read() if template_file and template_file.filename.endswith('.docx') else None
+                if file_data:
+                    logger.info(f"Storing template file for '{template_name}' (size: {len(file_data)} bytes)")
+                else:
+                    logger.info(f"No template file provided for '{template_name}'")
                 cur.execute(
                     "INSERT INTO templates (user_id, client_id, template_name, template_prompt_id, template_file) "
                     "VALUES (%s, %s, %s, %s, %s) RETURNING id",
@@ -139,12 +143,14 @@ def create_template():
                 template_id = template[0]
                 file_data = template_file.read() if template_file and template_file.filename.endswith('.docx') else None
                 if file_data:
+                    logger.info(f"Updating template file for '{template_name}' (size: {len(file_data)} bytes)")
                     cur.execute(
                         "UPDATE templates SET template_name = %s, template_prompt_id = %s, template_file = %s "
                         "WHERE id = %s",
                         (template_name, int(template_prompt_id), file_data, template_id)
                     )
                 else:
+                    logger.info(f"No new template file provided for '{template_name}' during update")
                     cur.execute(
                         "UPDATE templates SET template_name = %s, template_prompt_id = %s "
                         "WHERE id = %s",
@@ -317,6 +323,7 @@ def create_template_file(template_id):
             "UPDATE templates SET template_file = %s WHERE id = %s AND user_id = %s",
             (file_data, template_id, current_user.id)
         )
+        logger.info(f"Updated template file for template ID {template_id} (size: {len(file_data)} bytes)")
         conn.commit()
         flash('Template file created successfully from prompt', 'success')
         cur.close()
@@ -348,6 +355,7 @@ def create_prompt_from_file(template_id):
             return redirect(url_for('template.create_template'))
 
         template_file, template_name, client_id = template
+        logger.info(f"Retrieved template file for template ID {template_id} (size: {len(template_file)} bytes)")
         with NamedTemporaryFile(delete=False, suffix='.docx') as temp_file:
             temp_file.write(template_file)
             temp_file_path = temp_file.name
@@ -447,6 +455,7 @@ def view_template_file(template_id):
             flash('Template file not found', 'danger')
             return redirect(url_for('template.create_template'))
         file_data, template_name = template
+        logger.info(f"Retrieved template file for download, template ID {template_id} (size: {len(file_data)} bytes)")
         return Response(
             file_data,
             mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',

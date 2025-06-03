@@ -25,7 +25,8 @@
                                 <option value="{{ template.id }}"
                                         {% if template.id|string == selected_template %}selected{% endif %}
                                         data-prompt="{{ template.template_prompt_content|replace('\n', '\\n')|e }}"
-                                        data-conversion="{{ template.conversion_prompt_content|replace('\n', '\\n')|e if template.conversion_prompt_content else '' }}">
+                                        data-conversion="{{ template.conversion_prompt_content|replace('\n', '\\n')|e if template.conversion_prompt_content else '' }}"
+                                        data-filename="{{ template.template_name if template.has_file else '' }}">
                                     {{ template.template_name }}
                                 </option>
                             {% endfor %}
@@ -45,6 +46,7 @@
                         <label for="source_file">Upload Document to Convert:</label>
                         <input type="file" class="form-control-file" id="source_file" name="source_file" accept=".docx" required>
                     </div>
+                    <button type="submit" class="btn btn-primary mt-3">Reformat Document</button>
                 </div>
                 <div class="col-md-6">
                     <div class="form-group">
@@ -54,6 +56,7 @@
                                 <h5 class="card-title">Template Prompt:</h5>
                                 <textarea class="form-control" id="template_prompt" name="template_prompt" rows="10" oninput="markFormChanged()">{{ template_prompt }}</textarea>
                                 <small class="form-text text-muted">This defines the layout, sections, and semantics of the output document.</small>
+                                <p id="template-file-name" class="form-text text-muted mt-2" style="display: none;"></p>
                             </div>
                         </div>
                     </div>
@@ -69,24 +72,7 @@
                     </div>
                 </div>
             </div>
-            <button type="submit" class="btn btn-primary mt-3">Reformat Document</button>
         </form>
-        {% if converted_content %}
-            <div class="card shadow-sm mt-4">
-                <div class="card-body">
-                    <h2 class="card-title mb-4">Converted Content Preview</h2>
-                    <pre>{{ converted_content|tojson(indent=2) }}</pre>
-                    <form method="POST" action="{{ url_for('main.index') }}" class="d-inline">
-                        <input type="hidden" name="action" value="accept">
-                        <button type="submit" class="btn btn-success">Accept Conversion</button>
-                    </form>
-                    <form method="POST" action="{{ url_for('main.index') }}" class="d-inline">
-                        <input type="hidden" name="action" value="make_changes">
-                        <button type="submit" class="btn btn-secondary">Make Changes</button>
-                    </form>
-                </div>
-            </div>
-        {% endif %}
     </div>
 </div>
 {% endblock %}
@@ -137,11 +123,24 @@ function updatePromptContent() {
 }
 
 function updateTemplateLabelAndStatus() {
-    const templateId = document.getElementById('template').value;
+    const templateSelect = document.getElementById('template');
+    const templateId = templateSelect.value;
     const clientId = document.getElementById('client').value || '';
     const templatePrompt = document.getElementById('template_prompt');
     const conversionPrompt = document.getElementById('conversion_prompt');
+    const templateFileName = document.getElementById('template-file-name');
+
     if (templateId) {
+        const selectedOption = templateSelect.options[templateSelect.selectedIndex];
+        const fileName = selectedOption.getAttribute('data-filename');
+        if (fileName) {
+            templateFileName.style.display = 'block';
+            templateFileName.textContent = `Template File: ${fileName}.docx`;
+        } else {
+            templateFileName.style.display = 'none';
+            templateFileName.textContent = '';
+        }
+
         fetch('/load_client', {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -156,10 +155,14 @@ function updateTemplateLabelAndStatus() {
             console.error('Error loading template:', error);
             templatePrompt.value = '';
             conversionPrompt.value = '';
+            templateFileName.style.display = 'none';
+            templateFileName.textContent = '';
         });
     } else {
         templatePrompt.value = '';
         conversionPrompt.value = '';
+        templateFileName.style.display = 'none';
+        templateFileName.textContent = '';
     }
 }
 
