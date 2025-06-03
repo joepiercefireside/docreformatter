@@ -96,23 +96,24 @@ def get_templates_for_client(client_id, user_id):
         cur.execute("""
             SELECT t.id, t.template_name, p.prompt_name AS template_prompt_name, p.content AS template_prompt_content, 
                    cp.prompt_name AS conversion_prompt_name, cp.content AS conversion_prompt_content, 
-                   t.template_file IS NOT NULL AS has_file, t.template_prompt_id, tpa.conversion_prompt_id
+                   t.template_file IS NOT NULL AS has_file, t.template_prompt_id, tpa.conversion_prompt_id, c.client_id
             FROM templates t
             JOIN prompts p ON t.template_prompt_id = p.id
             LEFT JOIN template_prompt_associations tpa ON t.id = tpa.template_id
             LEFT JOIN prompts cp ON tpa.conversion_prompt_id = cp.id
-            JOIN clients c ON t.client_id = c.id
+            LEFT JOIN clients c ON t.client_id = c.id
             WHERE t.user_id = %s AND (c.client_id = %s OR t.client_id IS NULL);
         """, (user_id, client_id))
     else:
         cur.execute("""
             SELECT t.id, t.template_name, p.prompt_name AS template_prompt_name, p.content AS template_prompt_content, 
                    cp.prompt_name AS conversion_prompt_name, cp.content AS conversion_prompt_content, 
-                   t.template_file IS NOT NULL AS has_file, t.template_prompt_id, tpa.conversion_prompt_id
+                   t.template_file IS NOT NULL AS has_file, t.template_prompt_id, tpa.conversion_prompt_id, c.client_id
             FROM templates t
             JOIN prompts p ON t.template_prompt_id = p.id
             LEFT JOIN template_prompt_associations tpa ON t.id = tpa.template_id
             LEFT JOIN prompts cp ON tpa.conversion_prompt_id = cp.id
+            LEFT JOIN clients c ON t.client_id = c.id
             WHERE t.user_id = %s AND t.client_id IS NULL;
         """, (user_id,))
     templates = [
@@ -125,7 +126,8 @@ def get_templates_for_client(client_id, user_id):
             'conversion_prompt_content': row[5],
             'has_file': row[6],
             'template_prompt_id': row[7],
-            'conversion_prompt_id': row[8]
+            'conversion_prompt_id': row[8],
+            'client_id': row[9]
         } for row in cur.fetchall()
     ]
     cur.close()
@@ -138,18 +140,26 @@ def get_conversion_prompts_for_client(client_id, user_id):
     cur = conn.cursor()
     if client_id:
         cur.execute("""
-            SELECT p.id, p.prompt_name, p.content
+            SELECT p.id, p.prompt_name, p.content, c.client_id
             FROM prompts p
-            JOIN clients c ON p.client_id = c.id
+            LEFT JOIN clients c ON p.client_id = c.id
             WHERE p.user_id = %s AND (c.client_id = %s OR p.client_id IS NULL) AND p.prompt_type = 'conversion';
         """, (user_id, client_id))
     else:
         cur.execute("""
-            SELECT p.id, p.prompt_name, p.content
+            SELECT p.id, p.prompt_name, p.content, c.client_id
             FROM prompts p
+            LEFT JOIN clients c ON p.client_id = c.id
             WHERE p.user_id = %s AND p.client_id IS NULL AND p.prompt_type = 'conversion';
         """, (user_id,))
-    prompts = [{'id': row[0], 'prompt_name': row[1], 'content': row[2]} for row in cur.fetchall()]
+    prompts = [
+        {
+            'id': row[0],
+            'prompt_name': row[1],
+            'content': row[2],
+            'client_id': row[3]
+        } for row in cur.fetchall()
+    ]
     cur.close()
     conn.close()
     logger.info(f"Fetched conversion prompts for client {client_id}, user {user_id}: {[p['prompt_name'] for p in prompts]}")

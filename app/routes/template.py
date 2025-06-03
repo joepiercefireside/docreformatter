@@ -14,6 +14,9 @@ from io import BytesIO
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import secrets
+import logging
+
+logger = logging.getLogger(__name__)
 
 template_bp = Blueprint('template', __name__)
 
@@ -166,10 +169,11 @@ def create_template():
                 return redirect(url_for('template.create_template', client_id=client_id))
 
     templates = get_templates_for_client(selected_client, current_user.id)
+    logger.debug(f"Templates fetched: {templates}")
     filtered_templates = [
         template for template in templates
-        if (selected_client and (template['client_id'] is None or template['client_id'] == selected_client)) or
-           (not selected_client and template['client_id'] is None)
+        if (selected_client and ('client_id' in template and (template['client_id'] is None or template['client_id'] == selected_client))) or
+           (not selected_client and ('client_id' in template and template['client_id'] is None))
     ]
     cur.close()
     conn.close()

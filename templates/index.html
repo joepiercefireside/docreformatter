@@ -48,11 +48,11 @@
                 </div>
                 <div class="col-md-6">
                     <div class="form-group">
-                        <label>Template Prompt Content (Loaded from Selected Template)</label>
+                        <label>Template Prompt Content</label>
                         <div class="card">
                             <div class="card-body">
                                 <h5 class="card-title">Template Prompt:</h5>
-                                <textarea class="form-control" id="template_prompt" name="template_prompt" rows="10" readonly>{{ template_prompt }}</textarea>
+                                <textarea class="form-control" id="template_prompt" name="template_prompt" rows="10" oninput="markFormChanged()">{{ template_prompt }}</textarea>
                                 <small class="form-text text-muted">This defines the layout, sections, and semantics of the output document.</small>
                             </div>
                         </div>
@@ -62,7 +62,7 @@
                         <div class="card">
                             <div class="card-body">
                                 <h5 class="card-title">Conversion Prompt:</h5>
-                                <textarea class="form-control" id="conversion_prompt" name="conversion_prompt" rows="10">{{ conversion_prompt }}</textarea>
+                                <textarea class="form-control" id="conversion_prompt" name="conversion_prompt" rows="10" oninput="markFormChanged()">{{ conversion_prompt }}</textarea>
                                 <small class="form-text text-muted">This provides additional instructions (e.g., tone, brevity) for the conversion.</small>
                             </div>
                         </div>
@@ -93,6 +93,22 @@
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/main.js') }}" defer></script>
 <script>
+let formChanged = false;
+
+function markFormChanged() {
+    formChanged = true;
+}
+
+function checkFormChanged() {
+    return formChanged;
+}
+
+window.onbeforeunload = function() {
+    if (checkFormChanged()) {
+        return "You have unsaved changes. Are you sure you want to leave?";
+    }
+};
+
 function submitAction(action) {
     document.getElementById('action').value = action;
     document.getElementById('reformat-form').submit();

@@ -5,6 +5,7 @@ from ..utils.document import process_docx, process_text_input
 from ..utils.conversion import convert_content
 from ..utils.docx_builder import create_reformatted_docx
 import json
+from io import BytesIO
 
 main_bp = Blueprint('main', __name__)
 
@@ -22,6 +23,18 @@ def index():
     selected_template = ''
     conversion_prompt_id = ''
     output_file = None
+
+    # Filter templates and conversion prompts for the selected client
+    filtered_templates = [
+        template for template in templates
+        if (selected_client and (template['client_id'] is None or template['client_id'] == selected_client)) or
+           (not selected_client and template['client_id'] is None)
+    ]
+    filtered_conversion_prompts = [
+        prompt for prompt in conversion_prompts
+        if (selected_client and (prompt['client_id'] is None or prompt['client_id'] == selected_client)) or
+           (not selected_client and prompt['client_id'] is None)
+    ]
 
     if request.method == 'POST':
         action = request.form.get('action')
@@ -71,8 +84,8 @@ def index():
                 'index.html',
                 clients=clients,
                 selected_client=selected_client,
-                templates=templates,
-                conversion_prompts=conversion_prompts,
+                templates=filtered_templates,
+                conversion_prompts=filtered_conversion_prompts,
                 template_prompt=template_prompt,
                 conversion_prompt=conversion_prompt,
                 converted_content=converted_content,
@@ -99,8 +112,8 @@ def index():
         'index.html',
         clients=clients,
         selected_client=selected_client,
-        templates=templates,
-        conversion_prompts=conversion_prompts,
+        templates=filtered_templates,
+        conversion_prompts=filtered_conversion_prompts,
         template_prompt=template_prompt,
         conversion_prompt=conversion_prompt,
         converted_content=converted_content,
