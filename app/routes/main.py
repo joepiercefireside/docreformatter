@@ -93,8 +93,11 @@ def index():
                     mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
                     headers={'Content-Disposition': 'attachment; filename=reformatted_document.docx'}
                 )
+            except TypeError as e:
+                flash(f"Conversion failed due to invalid input types: {str(e)}. Please ensure the template and conversion prompts are correctly formatted.", 'danger')
+                return redirect(url_for('main.index', client_id=selected_client))
             except Exception as e:
-                flash(str(e), 'danger')
+                flash(f"Conversion failed: {str(e)}. Please check the template and conversion prompts and try again.", 'danger')
                 return redirect(url_for('main.index', client_id=selected_client))
 
     return render_template(

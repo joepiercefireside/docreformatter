@@ -13,20 +13,28 @@ def convert_content(content, template_prompt, conversion_prompt):
     
     Args:
         content (str): The raw content extracted from the source document.
-        template_prompt (str): The prompt defining the structure and style.
-        conversion_prompt (str): Additional instructions for tone, brevity, etc.
+        template_prompt (str): The prompt defining the structure and semantics.
+        conversion_prompt (str): Additional instructions for modifying content (e.g., tone, brevity).
     
     Returns:
         dict: Structured content in JSON format.
     
     Raises:
-        Exception: If the API call fails.
+        Exception: If the API call fails or inputs are invalid.
     """
     try:
+        # Validate inputs
+        if not isinstance(content, str):
+            raise TypeError(f"Expected 'content' to be a string, got {type(content)}")
+        if not isinstance(template_prompt, str):
+            raise TypeError(f"Expected 'template_prompt' to be a string, got {type(template_prompt)}")
+        if not isinstance(conversion_prompt, str):
+            raise TypeError(f"Expected 'conversion_prompt' to be a string, got {type(conversion_prompt)}")
+
         # Prepare the system prompt for the LLM
         system_prompt = (
             "You are an AI assistant tasked with converting raw content into a structured JSON format "
-            "based on a template prompt, followed by applying additional conversion instructions.\n\n"
+            "based on a template prompt, followed by applying additional conversion instructions to modify the content.\n\n"
             "**Step 1: Structure the Content Using the Template Prompt**\n"
             "Use the following template prompt to define the structure, sections, and semantics of the output:\n\n"
             "**Template Prompt**:\n" + template_prompt + "\n\n"
@@ -34,6 +42,8 @@ def convert_content(content, template_prompt, conversion_prompt):
             "professional summary, core competencies, professional experience, education, etc. Ensure the content "
             "is organized according to the template's specified layout and semantics.\n\n"
             "**Step 2: Apply Conversion Instructions (if provided)**\n"
+            "The conversion instructions are for modifying the content's tone, brevity, or wording, NOT for applying "
+            "document styling (e.g., fonts, colors, sizes, spacing). Styling will be handled separately after this step.\n"
         )
         if conversion_prompt:
             system_prompt += (
@@ -68,7 +78,8 @@ def convert_content(content, template_prompt, conversion_prompt):
             "  }\n"
             "}\n"
             "```\n"
-            "Ensure the content is structured according to the template prompt and then modified by the conversion instructions."
+            "Ensure the content is structured according to the template prompt and then modified by the conversion instructions "
+            "(e.g., tone, brevity), but do NOT apply document styling (e.g., fonts, colors, sizes, spacing)."
         )
 
         # Prepare the user prompt with the raw content
