@@ -5,9 +5,11 @@ from ..utils.document import process_docx, process_text_input
 from ..utils.conversion import convert_content
 from ..utils.docx_builder import create_reformatted_docx
 from docx import Document
+from docx.shared import Pt
 import json
 from io import BytesIO
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -61,20 +63,35 @@ def index():
                 conn = get_db_connection()
                 cur = conn.cursor()
                 cur.execute(
-                    "SELECT template_file, template_prompt_id FROM templates WHERE id = %s AND user_id = %s",
+                    "SELECT template_file, template_prompt_id, p.content AS template_prompt_content "
+                    "FROM templates t "
+                    "LEFT JOIN prompts p ON t.template_prompt_id = p.id "
+                    "WHERE t.id = %s AND t.user_id = %s",
                     (selected_template, current_user.id)
                 )
                 template_data = cur.fetchone()
                 template_file = template_data[0]
                 template_prompt_id = template_data[1]
+                template_prompt_content = template_data[2]
                 cur.close()
                 conn.close()
 
                 if not template_file:
                     flash('Template file not found. Please ensure the selected template has an associated file.', 'danger')
                     return redirect(url_for('main.index', client_id=selected_client))
+                if not template_prompt_content:
+                    flash('Template prompt content not found. Please ensure the selected template has an associated prompt.', 'danger')
+                    return redirect(url_for('main.index', client_id=selected_client))
 
                 logger.info(f"Using template file for template ID {selected_template} (length: {len(template_file)} bytes)")
+
+                # Parse expected sections from the template prompt
+                expected_sections = []
+                section_pattern = r"\*\*Section:\s*([^\*]+)\*\*\s*- \*\*Purpose\*\*:\s*This section represents\s*([^\s]+)\s*content"
+                for match in re.finditer(section_pattern, template_prompt_content):
+                    section_name = match.group(1).strip()
+                    section_key = match.group(2).strip()
+                    expected_sections.append((section_name.lower(), section_key))
 
                 # Process source content
                 source_file = request.files.get('source_file')
@@ -83,37 +100,89 @@ def index():
                     doc = Document(source_file)
                     sections = []
                     current_section = None
-                    for para in doc.paragraphs:
-                        text = para.text.strip()
-                        if not text:
-                            continue
-                        is_header = (
-                            para.runs and (
-                                para.runs[0].bold or
-                                (para.runs[0].font.size is not None and para.runs[0].font.size > Pt(12))
-                            ) or
-                            text.isupper()
-                        )
-                        if is_header:
-                            current_section = text.lower().replace(' ', '_')
-                            sections.append({"header": current_section, "content": []})
-                        elif current_section:
-                            sections[-1]["content"].append(text)
+                    raw_content = []
 
-                    for table in doc.tables:
-                        table_content = []
-                        for row in table.rows:
-                            row_content = [cell.text.strip() for cell in row.cells]
-                            table_content.append(row_content)
-                        sections.append({"header": "table", "content": table_content})
+                    # Extract all paragraphs and tables
+                    for element in doc.element.body:
+                        if element.tag.endswith('p'):  # Paragraph
+                            para = doc.paragraphs[len(raw_content)]
+                            text = para.text.strip()
+                            if text:
+                                raw_content.append({"type": "paragraph", "text": text, "runs": para.runs})
+                        elif element.tag.endswith('tbl'):  # Table
+                            table = doc.tables[len([e for e in raw_content if e["type"] == "table"])]
+                            table_content = []
+                            for row in table.rows:
+                                row_content = [cell.text.strip() for cell in row.cells]
+                                table_content.append(row_content)
+                            raw_content.append({"type": "table", "content": table_content})
 
+                    # Map content to expected sections using template prompt
                     structured_content = {"sections": {}}
-                    for section in sections:
-                        header = section["header"]
-                        if header == "table":
-                            structured_content["sections"].setdefault("tables", []).append(section["content"])
-                        else:
-                            structured_content["sections"][header] = section["content"]
+                    used_content_indices = set()
+
+                    for section_name, section_key in expected_sections:
+                        best_match_idx = -1
+                        best_match_score = 0
+                        for idx, item in enumerate(raw_content):
+                            if idx in used_content_indices:
+                                continue
+                            if item["type"] == "paragraph":
+                                text = item["text"].lower()
+                                # Simple scoring based on header similarity
+                                if section_name in text:
+                                    score = 1.0  # Exact match
+                                else:
+                                    # Approximate match based on keywords
+                                    keywords = section_name.split()
+                                    score = sum(1 for keyword in keywords if keyword in text) / len(keywords)
+                                if score > best_match_score:
+                                    best_match_score = score
+                                    best_match_idx = idx
+
+                        if best_match_idx >= 0:
+                            # Found a matching paragraph, start collecting content until the next section
+                            content = []
+                            idx = best_match_idx
+                            while idx < len(raw_content):
+                                item = raw_content[idx]
+                                if idx in used_content_indices:
+                                    idx += 1
+                                    continue
+                                if item["type"] == "paragraph":
+                                    text = item["text"]
+                                    # Check if this paragraph matches another section header
+                                    is_new_section = False
+                                    for other_section_name, _ in expected_sections:
+                                        if other_section_name != section_name and other_section_name in text.lower():
+                                            is_new_section = True
+                                            break
+                                    if is_new_section:
+                                        break
+                                    content.append(text)
+                                    used_content_indices.add(idx)
+                                elif item["type"] == "table":
+                                    # Tables are handled separately
+                                    break
+                                idx += 1
+                            structured_content["sections"][section_key] = content
+                            used_content_indices.add(best_match_idx)
+
+                    # Handle tables separately
+                    tables = []
+                    for idx, item in enumerate(raw_content):
+                        if idx in used_content_indices:
+                            continue
+                        if item["type"] == "table":
+                            tables.append(item["content"])
+                            used_content_indices.add(idx)
+                    if tables:
+                        structured_content["sections"]["tables"] = tables
+
+                    # Fill missing sections with empty lists
+                    for _, section_key in expected_sections:
+                        if section_key not in structured_content["sections"]:
+                            structured_content["sections"][section_key] = []
 
                 else:
                     # For non-.docx sources, use LLM to interpret content

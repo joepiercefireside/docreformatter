@@ -23,15 +23,15 @@ def create_reformatted_docx(converted_content, template_file):
         template_doc = Document(template_stream)
 
         # Extract styles from the template
-        styles = {}
+        styles = {"header": None, "body": None}
         for para in template_doc.paragraphs:
             if not para.text.strip():
                 continue
-            # Determine if this paragraph is a header (based on bold, size, or uppercase)
+            # Determine if this paragraph is a header (based on bold, size > 11pt, or uppercase)
             is_header = (
                 para.runs and (
                     para.runs[0].bold or
-                    (para.runs[0].font.size and para.runs[0].font.size.pt > 12) or
+                    (para.runs[0].font.size and para.runs[0].font.size.pt > 11) or
                     para.text.isupper()
                 )
             )
@@ -41,8 +41,8 @@ def create_reformatted_docx(converted_content, template_file):
             run = para.runs[0] if para.runs else None
             style = {
                 "font_name": run.font.name if run and run.font.name else "Arial",
-                "font_size_pt": run.font.size.pt if run and run.font.size else 11,
-                "bold": run.bold if run and run.bold is not None else False,
+                "font_size_pt": run.font.size.pt if run and run.font.size else (12 if is_header else 11),
+                "bold": run.bold if run and run.bold is not None else is_header,
                 "color_rgb": (
                     [run.font.color.rgb.red, run.font.color.rgb.green, run.font.color.rgb.blue]
                     if run and run.font.color and run.font.color.rgb
@@ -53,20 +53,22 @@ def create_reformatted_docx(converted_content, template_file):
                     WD_ALIGN_PARAGRAPH.CENTER: "center",
                     WD_ALIGN_PARAGRAPH.RIGHT: "right",
                     WD_ALIGN_PARAGRAPH.JUSTIFY: "justify"
-                }.get(para.paragraph_format.alignment, "left"),
+                }.get(para.paragraph_format.alignment, "center" if is_header else "left"),
                 "spacing_before_pt": (
                     para.paragraph_format.space_before.pt
                     if para.paragraph_format.space_before
-                    else 6
+                    else 12 if is_header else 6
                 ),
                 "spacing_after_pt": (
                     para.paragraph_format.space_after.pt
                     if para.paragraph_format.space_after
-                    else 6
+                    else 12 if is_header else 6
                 ),
                 "is_horizontal_list": "•" in para.text and para.text.count('\n') <= 1
             }
-            styles[style_type] = style
+            # Only set the style if not already set to preserve the first occurrence
+            if styles[style_type] is None:
+                styles[style_type] = style
 
         logger.debug(f"Extracted styles from template: {styles}")
 
@@ -88,9 +90,9 @@ def create_reformatted_docx(converted_content, template_file):
                 "center": WD_ALIGN_PARAGRAPH.CENTER,
                 "right": WD_ALIGN_PARAGRAPH.RIGHT,
                 "justify": WD_ALIGN_PARAGRAPH.JUSTIFY
-            }.get("center", WD_ALIGN_PARAGRAPH.CENTER)  # Name is typically centered
-            para.paragraph_format.space_before = Pt(style.get("spacing_before_pt", 6))
-            para.paragraph_format.space_after = Pt(style.get("spacing_after_pt", 6))
+            }.get("center", WD_ALIGN_PARAGRAPH.CENTER)
+            para.paragraph_format.space_before = Pt(style.get("spacing_before_pt", 12))
+            para.paragraph_format.space_after = Pt(style.get("spacing_after_pt", 12))
 
         # Add contact info (header style, centered)
         if "contact" in converted_content["sections"]:
@@ -107,8 +109,8 @@ def create_reformatted_docx(converted_content, template_file):
                 "right": WD_ALIGN_PARAGRAPH.RIGHT,
                 "justify": WD_ALIGN_PARAGRAPH.JUSTIFY
             }.get("center", WD_ALIGN_PARAGRAPH.CENTER)
-            para.paragraph_format.space_before = Pt(style.get("spacing_before_pt", 6))
-            para.paragraph_format.space_after = Pt(style.get("spacing_after_pt", 6))
+            para.paragraph_format.space_before = Pt(style.get("spacing_before_pt", 12))
+            para.paragraph_format.space_after = Pt(style.get("spacing_after_pt", 12))
 
         # Add sections (e.g., professional summary, core competencies, etc.)
         for section_key, section_content in converted_content["sections"].items():
@@ -129,9 +131,9 @@ def create_reformatted_docx(converted_content, template_file):
                 "center": WD_ALIGN_PARAGRAPH.CENTER,
                 "right": WD_ALIGN_PARAGRAPH.RIGHT,
                 "justify": WD_ALIGN_PARAGRAPH.JUSTIFY
-            }.get(style.get("alignment", "left"), WD_ALIGN_PARAGRAPH.LEFT)
-            para.paragraph_format.space_before = Pt(style.get("spacing_before_pt", 6))
-            para.paragraph_format.space_after = Pt(style.get("spacing_after_pt", 6))
+            }.get(style.get("alignment", "center"), WD_ALIGN_PARAGRAPH.CENTER)
+            para.paragraph_format.space_before = Pt(style.get("spacing_before_pt", 12))
+            para.paragraph_format.space_after = Pt(style.get("spacing_after_pt", 12))
 
             # Add section content
             style = styles.get("body", {})
