@@ -40,11 +40,17 @@
                                 <option value="{{ prompt.id }}" {% if prompt.id|string == conversion_prompt_id %}selected{% endif %}>{{ prompt.prompt_name }}</option>
                             {% endfor %}
                         </select>
-                        <small class="form-text text-muted">Select a conversion prompt or leave as "None".</small>
+                        <small class="form-text text-muted">Select a conversion prompt to guide interpretation of non-.docx sources, or leave as "None".</small>
                     </div>
                     <div class="form-group">
-                        <label for="source_file">Upload Document to Convert:</label>
-                        <input type="file" class="form-control-file" id="source_file" name="source_file" accept=".docx" required>
+                        <label for="source_file">Upload Document to Convert (Optional):</label>
+                        <input type="file" class="form-control-file" id="source_file" name="source_file" accept=".docx">
+                        <small class="form-text text-muted">Upload a .docx file, or provide text below.</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="source_text">Or Enter Text to Convert (Optional):</label>
+                        <textarea class="form-control" id="source_text" name="source_text" rows="5" placeholder="Enter text here if not uploading a file..."></textarea>
+                        <small class="form-text text-muted">Provide raw text if not uploading a .docx file.</small>
                     </div>
                     <button type="submit" class="btn btn-primary mt-3">Reformat Document</button>
                 </div>
@@ -66,7 +72,7 @@
                             <div class="card-body">
                                 <h5 class="card-title">Conversion Prompt:</h5>
                                 <textarea class="form-control" id="conversion_prompt" name="conversion_prompt" rows="10" oninput="markFormChanged()">{{ conversion_prompt }}</textarea>
-                                <small class="form-text text-muted">This provides additional instructions (e.g., tone, brevity) for the conversion.</small>
+                                <small class="form-text text-muted">This provides instructions to interpret non-.docx sources (e.g., tone, brevity, section extraction).</small>
                             </div>
                         </div>
                     </div>

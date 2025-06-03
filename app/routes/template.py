@@ -9,7 +9,6 @@ import requests
 import json
 import os
 from tempfile import NamedTemporaryFile
-from hashlib import md5
 from io import BytesIO
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -29,7 +28,6 @@ def create_template():
     reset_form = request.args.get('reset_form', 'false') == 'true' or not edit_template
     templates = []
     prompts = []
-    conversion_prompts = []
 
     conn = get_db_connection()
     cur = conn.cursor()
@@ -54,7 +52,6 @@ def create_template():
         client_id = request.form.get('client_id', '').strip()
         template_name = request.form.get('template_name', '').strip()
         template_prompt_id = request.form.get('template_prompt_id', '').strip()
-        conversion_prompt_id = request.form.get('conversion_prompt_id', '').strip()
         template_file = request.files.get('template_file')
         original_template_name = request.form.get('original_template_name', template_name).strip()
 
@@ -74,8 +71,8 @@ def create_template():
             if not template_name:
                 flash('Template name cannot be empty', 'danger')
                 return redirect(url_for('template.create_template', client_id=client_id))
-            if not template_prompt_id:
-                flash('Template prompt is required', 'danger')
+            if not template_prompt_id and not template_file:
+                flash('Either a template prompt or a template file is required', 'danger')
                 return redirect(url_for('template.create_template', client_id=client_id))
             try:
                 cur.execute(
@@ -95,14 +92,9 @@ def create_template():
                 cur.execute(
                     "INSERT INTO templates (user_id, client_id, template_name, template_prompt_id, template_file) "
                     "VALUES (%s, %s, %s, %s, %s) RETURNING id",
-                    (current_user.id, client_id_value, template_name, int(template_prompt_id), file_data)
+                    (current_user.id, client_id_value, template_name, template_prompt_id or None, file_data)
                 )
                 template_id = cur.fetchone()[0]
-                if conversion_prompt_id:
-                    cur.execute(
-                        "INSERT INTO template_prompt_associations (template_id, conversion_prompt_id) VALUES (%s, %s)",
-                        (template_id, int(conversion_prompt_id))
-                    )
                 conn.commit()
                 flash(f'Template "{template_name}" created successfully', 'success')
                 cur.close()
@@ -116,8 +108,8 @@ def create_template():
             if not template_name:
                 flash('Template name cannot be empty', 'danger')
                 return redirect(url_for('template.create_template', client_id=client_id))
-            if not template_prompt_id:
-                flash('Template prompt is required', 'danger')
+            if not template_prompt_id and not template_file:
+                flash('Either a template prompt or a template file is required', 'danger')
                 return redirect(url_for('template.create_template', client_id=client_id))
             try:
                 if template_name != original_template_name:
@@ -147,23 +139,14 @@ def create_template():
                     cur.execute(
                         "UPDATE templates SET template_name = %s, template_prompt_id = %s, template_file = %s "
                         "WHERE id = %s",
-                        (template_name, int(template_prompt_id), file_data, template_id)
+                        (template_name, template_prompt_id or None, file_data, template_id)
                     )
                 else:
                     logger.info(f"No new template file provided for '{template_name}' during update")
                     cur.execute(
                         "UPDATE templates SET template_name = %s, template_prompt_id = %s "
                         "WHERE id = %s",
-                        (template_name, int(template_prompt_id), template_id)
-                    )
-                cur.execute(
-                    "DELETE FROM template_prompt_associations WHERE template_id = %s",
-                    (template_id,)
-                )
-                if conversion_prompt_id:
-                    cur.execute(
-                        "INSERT INTO template_prompt_associations (template_id, conversion_prompt_id) VALUES (%s, %s)",
-                        (template_id, int(conversion_prompt_id))
+                        (template_name, template_prompt_id or None, template_id)
                     )
                 conn.commit()
                 flash(f'Template "{template_name}" updated successfully', 'success')
@@ -200,7 +183,7 @@ def create_template_file(template_id):
         )
         template = cur.fetchone()
         if not template:
-            flash('Template not found', 'danger')
+            flash('Template or associated prompt not found', 'danger')
             cur.close()
             conn.close()
             return redirect(url_for('template.create_template'))
@@ -255,7 +238,7 @@ def create_template_file(template_id):
         session = requests.Session()
         retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
         session.mount('https://', HTTPAdapter(max_retries=retries))
-        response = session.post(os.environ.get('AI_API_URL', 'https://api.openai.com/v1/chat/completions'), headers=headers, json=payload, timeout=30)
+        response = session.post(os.environ.get('API_URL', 'https://api.openai.com/v1/chat/completions'), headers=headers, json=payload, timeout=30)
         response.raise_for_status()
         data = response.json()
         if "choices" not in data or not data["choices"]:
@@ -325,12 +308,13 @@ def create_template_file(template_id):
         )
         logger.info(f"Updated template file for template ID {template_id} (size: {len(file_data)} bytes)")
         conn.commit()
-        flash('Template file created successfully from prompt', 'success')
+        flash('Template file generated successfully from prompt', 'success')
         cur.close()
         conn.close()
         return redirect(url_for('template.create_template'))
+
     except Exception as e:
-        flash(f'Failed to create template file: {str(e)}', 'danger')
+        flash(f'Failed to generate template file: {str(e)}', 'danger')
         if 'cur' in locals():
             cur.close()
         if 'conn' in locals():
@@ -426,12 +410,12 @@ def create_prompt_from_file(template_id):
             (new_prompt_id, template_id)
         )
         conn.commit()
-        flash(f'Template prompt "{prompt_name}" created successfully from file', 'success')
+        flash(f'Template prompt "{prompt_name}" generated successfully from file', 'success')
         cur.close()
         conn.close()
         return redirect(url_for('template.create_template'))
     except Exception as e:
-        flash(f'Failed to create prompt: {str(e)}', 'danger')
+        flash(f'Failed to generate prompt: {str(e)}', 'danger')
         if 'cur' in locals():
             cur.close()
         if 'conn' in locals():

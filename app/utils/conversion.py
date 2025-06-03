@@ -12,7 +12,7 @@ def convert_content(content, template_prompt, conversion_prompt):
     Convert raw content into a structured format using LLM based on the template prompt.
     
     Args:
-        content (str): The raw content extracted from the source document.
+        content (str or dict): The raw content extracted from the source document.
         template_prompt (str): The prompt defining the structure and semantics.
         conversion_prompt (str): Additional instructions for modifying content (e.g., tone, brevity).
     
@@ -23,9 +23,26 @@ def convert_content(content, template_prompt, conversion_prompt):
         Exception: If the API call fails or inputs are invalid.
     """
     try:
-        # Validate inputs
-        if not isinstance(content, str):
-            raise TypeError(f"Expected 'content' to be a string, got {type(content)}")
+        # Handle content input
+        if isinstance(content, dict):
+            # Backward compatibility for older process_docx versions
+            if "content" in content and isinstance(content["content"], list):
+                content_lines = []
+                for item in content["content"]:
+                    if isinstance(item, dict) and "type" in item:
+                        if item["type"] == "table":
+                            content_lines.append(f"Table: {item['data']}")
+                        elif item["type"] == "paragraph":
+                            content_lines.append(item["text"])
+                    else:
+                        content_lines.append(str(item))
+                content = "\n\n".join(content_lines)
+            else:
+                content = str(content)
+        elif not isinstance(content, str):
+            raise TypeError(f"Expected 'content' to be a string or dict, got {type(content)}")
+
+        # Validate other inputs
         if not isinstance(template_prompt, str):
             raise TypeError(f"Expected 'template_prompt' to be a string, got {type(template_prompt)}")
         if not isinstance(conversion_prompt, str):

@@ -4,6 +4,7 @@ from ..utils.database import get_db_connection, get_user_clients, get_templates_
 from ..utils.document import process_docx, process_text_input
 from ..utils.conversion import convert_content
 from ..utils.docx_builder import create_reformatted_docx
+from docx import Document
 import json
 from io import BytesIO
 import logging
@@ -56,14 +57,16 @@ def index():
                 return redirect(url_for('main.index', client_id=selected_client))
 
             try:
-                # Get template file for styling
+                # Get template file and prompt for styling and structuring
                 conn = get_db_connection()
                 cur = conn.cursor()
                 cur.execute(
-                    "SELECT template_file FROM templates WHERE id = %s AND user_id = %s",
+                    "SELECT template_file, template_prompt_id FROM templates WHERE id = %s AND user_id = %s",
                     (selected_template, current_user.id)
                 )
-                template_file = cur.fetchone()[0]
+                template_data = cur.fetchone()
+                template_file = template_data[0]
+                template_prompt_id = template_data[1]
                 cur.close()
                 conn.close()
 
@@ -76,16 +79,53 @@ def index():
                 # Process source content
                 source_file = request.files.get('source_file')
                 if source_file and source_file.filename.endswith('.docx'):
-                    content = process_docx(source_file)
+                    # For .docx files, extract content directly
+                    doc = Document(source_file)
+                    sections = []
+                    current_section = None
+                    for para in doc.paragraphs:
+                        text = para.text.strip()
+                        if not text:
+                            continue
+                        is_header = (
+                            para.runs and (
+                                para.runs[0].bold or
+                                (para.runs[0].font.size is not None and para.runs[0].font.size > Pt(12))
+                            ) or
+                            text.isupper()
+                        )
+                        if is_header:
+                            current_section = text.lower().replace(' ', '_')
+                            sections.append({"header": current_section, "content": []})
+                        elif current_section:
+                            sections[-1]["content"].append(text)
+
+                    for table in doc.tables:
+                        table_content = []
+                        for row in table.rows:
+                            row_content = [cell.text.strip() for cell in row.cells]
+                            table_content.append(row_content)
+                        sections.append({"header": "table", "content": table_content})
+
+                    structured_content = {"sections": {}}
+                    for section in sections:
+                        header = section["header"]
+                        if header == "table":
+                            structured_content["sections"].setdefault("tables", []).append(section["content"])
+                        else:
+                            structured_content["sections"][header] = section["content"]
+
                 else:
-                    flash('Please upload a valid .docx file', 'danger')
-                    return redirect(url_for('main.index', client_id=selected_client))
+                    # For non-.docx sources, use LLM to interpret content
+                    source_text = request.form.get('source_text', '')
+                    if not source_text:
+                        flash('Please upload a .docx file or provide text input', 'danger')
+                        return redirect(url_for('main.index', client_id=selected_client))
+                    content = process_text_input(source_text)
+                    structured_content = convert_content(content, template_prompt, conversion_prompt)
 
-                # Step 1: Semantic structuring with LLM
-                converted_content = convert_content(content, template_prompt, conversion_prompt)
-
-                # Step 2: Apply styles with python-docx
-                output_file = create_reformatted_docx(converted_content, template_file)
+                # Apply styles with python-docx
+                output_file = create_reformatted_docx(structured_content, template_file)
 
                 # Return the file for immediate download
                 return Response(
