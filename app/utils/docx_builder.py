@@ -135,7 +135,29 @@ def create_reformatted_docx(converted_content, template_file):
 
             # Add section content
             style = styles.get("body", {})
-            if isinstance(section_content, list):
+            if section_key == "tables":
+                # Handle tables by adding them as actual tables in the doc
+                for table_data in section_content:
+                    table = doc.add_table(rows=len(table_data), cols=len(table_data[0]) if table_data else 1)
+                    for row_idx, row in enumerate(table_data):
+                        for col_idx, cell_text in enumerate(row):
+                            cell = table.cell(row_idx, col_idx)
+                            cell.text = cell_text
+                            for paragraph in cell.paragraphs:
+                                for run in paragraph.runs:
+                                    run.font.name = style.get("font_name", "Arial")
+                                    run.font.size = Pt(style.get("font_size_pt", 11))
+                                    run.bold = style.get("bold", False)
+                                    run.font.color.rgb = RGBColor(*style.get("color_rgb", [0, 0, 0]))
+                                paragraph.paragraph_format.alignment = {
+                                    "left": WD_ALIGN_PARAGRAPH.LEFT,
+                                    "center": WD_ALIGN_PARAGRAPH.CENTER,
+                                    "right": WD_ALIGN_PARAGRAPH.RIGHT,
+                                    "justify": WD_ALIGN_PARAGRAPH.JUSTIFY
+                                }.get(style.get("alignment", "left"), WD_ALIGN_PARAGRAPH.LEFT)
+                                paragraph.paragraph_format.space_before = Pt(style.get("spacing_before_pt", 6))
+                                paragraph.paragraph_format.space_after = Pt(style.get("spacing_after_pt", 6))
+            elif isinstance(section_content, list):
                 # Handle lists (e.g., core competencies, professional experience bullets)
                 if section_key == "core_competencies" and style.get("is_horizontal_list", False):
                     # Horizontal list with dots
